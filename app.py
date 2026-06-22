@@ -12,6 +12,17 @@ import matplotlib.pyplot as plt
 
 DB_PATH = "database/gerontocracy.db"
 
+def initialize_database_if_needed():
+    db_file = Path(DB_PATH)
+
+    if not db_file.exists():
+        create_tables()
+        df = get_all_indicators()
+        save_dataframe(df, "indicators")
+        run_quality_checks()
+
+
+initialize_database_if_needed()
 
 def load_indicators():
     conn = sqlite3.connect(DB_PATH)
