@@ -3,9 +3,20 @@ import pandas as pd
 from pathlib import Path
 
 DB_PATH = Path("database/gerontocracy.db")
+def initialize_database_if_needed():
+    db_file = Path(DB_PATH)
 
+    if not db_file.exists():
+        create_tables()
+        df = get_all_indicators()
+        save_dataframe(df, "indicators")
+        run_quality_checks()
+
+
+initialize_database_if_needed()
 
 def get_connection():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)
 
 
