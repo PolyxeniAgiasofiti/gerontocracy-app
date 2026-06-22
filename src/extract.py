@@ -21,24 +21,6 @@ def get_manual_appendix_b_indicators():
             "value": 44.9,
             "unit": "years",
             "source_name": "Eurostat"
-        },
-        {
-            "indicator_name": "Youth housing overburden",
-            "country": "Greece",
-            "comparator": "EU",
-            "year": "2024",
-            "value": 30.3,
-            "unit": "%",
-            "source_name": "Eurostat"
-        },
-        {
-            "indicator_name": "Youth housing overburden",
-            "country": "EU",
-            "comparator": "EU",
-            "year": "2024",
-            "value": 9.7,
-            "unit": "%",
-            "source_name": "Eurostat"
         }
     ]
 
@@ -46,8 +28,7 @@ def get_manual_appendix_b_indicators():
 
 
 def get_leaving_parental_home_from_eurostat():
-    dataset_code = "YTH_DEMO_030"
-    df = eurostat.get_data_df(dataset_code)
+    df = eurostat.get_data_df("YTH_DEMO_030")
 
     filtered = df[
         (df["sex"] == "T") &
@@ -58,13 +39,7 @@ def get_leaving_parental_home_from_eurostat():
 
     for _, row in filtered.iterrows():
         geo = row["geo\\TIME_PERIOD"]
-
-        if geo == "EL":
-            country = "Greece"
-        elif geo == "EU27_2020":
-            country = "EU"
-        else:
-            country = geo
+        country = "Greece" if geo == "EL" else "EU"
 
         rows.append({
             "indicator_name": "Leaving parental home",
@@ -79,8 +54,42 @@ def get_leaving_parental_home_from_eurostat():
     return pd.DataFrame(rows)
 
 
+def get_housing_overburden_from_eurostat():
+    df = eurostat.get_data_df("ILC_LVHO07A")
+
+    filtered = df[
+        (df["unit"] == "PC") &
+        (df["rskpovth"] == "TOTAL") &
+        (df["age"] == "Y15-29") &
+        (df["sex"] == "T") &
+        (df["geo\\TIME_PERIOD"].isin(["EL", "EU27_2020"]))
+    ]
+
+    rows = []
+
+    for _, row in filtered.iterrows():
+        geo = row["geo\\TIME_PERIOD"]
+        country = "Greece" if geo == "EL" else "EU"
+
+        rows.append({
+            "indicator_name": "Youth housing overburden",
+            "country": country,
+            "comparator": "EU",
+            "year": "2024",
+            "value": float(row["2024"]),
+            "unit": "%",
+            "source_name": "Eurostat ILC_LVHO07A"
+        })
+
+    return pd.DataFrame(rows)
+
+
 def get_all_indicators():
     manual_df = get_manual_appendix_b_indicators()
     parental_home_df = get_leaving_parental_home_from_eurostat()
+    housing_df = get_housing_overburden_from_eurostat()
 
-    return pd.concat([manual_df, parental_home_df], ignore_index=True)
+    return pd.concat(
+        [manual_df, parental_home_df, housing_df],
+        ignore_index=True
+    )
