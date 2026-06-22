@@ -21,7 +21,36 @@ def get_manual_appendix_b_indicators():
             "value": 44.9,
             "unit": "years",
             "source_name": "Eurostat"
-        }
+        },
+        {
+    "indicator_name": "Residential property price growth",
+    "country": "Greece",
+    "comparator": "EU",
+    "year": "2025",
+    "value": 7.7,
+    "unit": "%",
+    "source_name": "Bank of Greece"
+},
+
+
+        {
+            "indicator_name": "Old-age share of social spending",
+            "country": "Greece",
+            "comparator": "EU",
+            "year": "2023",
+            "value": 52.2,
+            "unit": "%",
+            "source_name": "ELSTAT ESSPROS 2023"
+        },
+        {
+            "indicator_name": "Housing share of social spending",
+            "country": "Greece",
+            "comparator": "EU",
+            "year": "2023",
+            "value": 0.7,
+            "unit": "%",
+            "source_name": "ELSTAT ESSPROS 2023"
+        },
     ]
 
     return pd.DataFrame(data)
