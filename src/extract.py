@@ -122,3 +122,34 @@ def get_all_indicators():
         [manual_df, parental_home_df, housing_df],
         ignore_index=True
     )
+
+
+def get_eurostat_demographics_dataset():
+    rows = [
+        {
+            "metric": "Median age",
+            "year": "2025",
+            "greece": 47.2,
+            "eu": 44.9,
+            "unit": "years",
+            "source_name": "Eurostat EQ_POP04"
+        },
+        {
+            "metric": "Leaving parental home",
+            "year": "2024",
+            "greece": 30.7,
+            "eu": 26.2,
+            "unit": "years",
+            "source_name": "Eurostat YTH_DEMO_030"
+        },
+        {
+            "metric": "Youth housing overburden",
+            "year": "2024",
+            "greece": 30.3,
+            "eu": 9.7,
+            "unit": "%",
+            "source_name": "Eurostat ILC_LVHO07A"
+        }
+    ]
+
+    return pd.DataFrame(rows)

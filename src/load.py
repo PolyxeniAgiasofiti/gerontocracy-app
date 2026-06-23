@@ -15,13 +15,14 @@ def create_tables():
     cur = conn.cursor()
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS sources (
+    CREATE TABLE IF NOT EXISTS eurostat_demographics (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_name TEXT,
-        provider TEXT,
-        dataset_url TEXT,
-        topic TEXT,
-        year TEXT
+        metric TEXT,
+        year TEXT,
+        greece REAL,
+        eu REAL,
+        unit TEXT,
+        source_name TEXT
     )
     """)
 

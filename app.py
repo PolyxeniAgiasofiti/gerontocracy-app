@@ -36,7 +36,11 @@ def load_quality():
     df = pd.read_sql("SELECT * FROM quality_results", conn)
     conn.close()
     return df
-
+def load_eurostat_demographics():
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql("SELECT * FROM eurostat_demographics", conn)
+    conn.close()
+    return df
 
 app_ui = ui.page_fluid(
     ui.h2("Gerontocracy in Greece — Appendix B Data App"),
@@ -50,7 +54,12 @@ app_ui = ui.page_fluid(
         ui.nav_panel(
             "Data Quality",
             ui.output_table("quality_table")
-        )
+        ),
+        ui.nav_panel(
+            "Eurostat Demographics",
+            ui.output_table("eurostat_table"),
+            ui.output_plot("eurostat_chart")
+        ),
     )
 )
 
@@ -85,6 +94,26 @@ def server(input, output, session):
     @render.table
     def quality_table():
         return load_quality()
+    @output
+    @render.table
+    def eurostat_table():
+        return load_eurostat_demographics()
 
+    @output
+    @render.plot
+    def eurostat_chart():
+        df = load_eurostat_demographics()
+
+        df.plot(
+            x="metric",
+            y=["greece", "eu"],
+            kind="bar"
+        )
+
+        plt.title("Eurostat Demographics — Greece vs EU")
+        plt.ylabel("Value")
+        plt.xlabel("Metric")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
 
 app = App(app_ui, server)
