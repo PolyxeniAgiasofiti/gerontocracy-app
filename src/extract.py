@@ -153,3 +153,42 @@ def get_eurostat_demographics_dataset():
     ]
 
     return pd.DataFrame(rows)
+def get_housing_market_dataset():
+    rows = [
+        {
+            "metric": "Residential property price growth",
+            "year": "2025",
+            "greece": 7.7,
+            "eu": None,
+            "unit": "%",
+            "source_name": "Bank of Greece",
+            "notes": "EU comparator not explicitly available in Appendix B / provided references."
+        }
+    ]
+
+    return pd.DataFrame(rows)
+def get_social_protection_dataset():
+    rows = [
+        {
+            "metric": "Old-age share of social spending",
+            "year": "2023",
+            "greece": 52.2,
+            "eu": None,
+            "unit": "%",
+            "source_name": "ELSTAT ESSPROS 2023",
+            "notes": "EU comparator not explicitly available in Appendix B / provided references."
+        },
+        {
+            "metric": "Housing share of social spending",
+            "year": "2023",
+            "greece": 0.7,
+            "eu": None,
+            "unit": "%",
+            "source_name": "ELSTAT ESSPROS 2023",
+            "notes": "EU comparator not explicitly available in Appendix B / provided references."
+        }
+    ]
+
+    return pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+    return pd.DataFrame(rows)

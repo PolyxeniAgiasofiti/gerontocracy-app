@@ -27,6 +27,32 @@ def create_tables():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS housing_market (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        metric TEXT,
+        year TEXT,
+        greece REAL,
+        eu REAL,
+        unit TEXT,
+        source_name TEXT,
+        notes TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS social_protection (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        metric TEXT,
+        year TEXT,
+        greece REAL,
+        eu REAL,
+        unit TEXT,
+        source_name TEXT,
+        notes TEXT
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS indicators (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         indicator_name TEXT,
@@ -51,7 +77,6 @@ def create_tables():
 
     conn.commit()
     conn.close()
-
 
 def save_dataframe(df, table_name):
     conn = get_connection()
