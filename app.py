@@ -4,6 +4,7 @@ from shiny import App, ui, render
 import pandas as pd
 import sqlite3
 import matplotlib.pyplot as plt
+from shiny.express import output
 
 from src.load import create_tables, save_dataframe
 from src.extract import get_all_indicators
@@ -131,11 +132,17 @@ def server(input, output, session):
         plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
 
-    @output
-    @render.table
-    def housing_table():
-        return load_housing_market()
-   @output
+@output
+@render.table
+def housing_table():
+    return load_housing_market()
+
+@output
+@render.table
+def social_table():
+    return load_social_protection()
+
+@output
 @render.plot
 def social_chart():
     df = load_social_protection()
@@ -152,10 +159,11 @@ def social_chart():
     plt.xlabel("Metric")
     plt.xticks(rotation=30, ha="right")
     plt.tight_layout()
-    @output
-    @render.table
-    def quality_table():
-        return load_quality()
+
+@output
+@render.table
+def quality_table():
+    return load_quality()
 
 
 app = App(app_ui, server)
