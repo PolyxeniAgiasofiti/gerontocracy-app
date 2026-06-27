@@ -94,7 +94,8 @@ app_ui = ui.page_fluid(
         ),
         ui.nav_panel(
     "Social Protection",
-    ui.output_table("social_table")
+    ui.output_table("social_table"),
+    ui.output_plot("social_chart")
 ),
     )
 )
@@ -134,10 +135,23 @@ def server(input, output, session):
     @render.table
     def housing_table():
         return load_housing_market()
-    @output
-    @render.table
-    def social_table():
-        return load_social_protection()
+   @output
+@render.plot
+def social_chart():
+    df = load_social_protection()
+
+    df.plot(
+        x="metric",
+        y="greece",
+        kind="bar",
+        legend=False
+    )
+
+    plt.title("Greece Social Protection Allocation")
+    plt.ylabel("Percentage (%)")
+    plt.xlabel("Metric")
+    plt.xticks(rotation=30, ha="right")
+    plt.tight_layout()
     @output
     @render.table
     def quality_table():
