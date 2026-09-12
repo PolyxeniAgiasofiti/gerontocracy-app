@@ -4,7 +4,7 @@ import eurostat
 import matplotlib.pyplot as plt
 import pandas as pd
 import sqlite3
-from shiny import App, render, ui
+from shiny import App, reactive, render, ui
 
 from src.extract import (
     get_leaving_home_eu_countries_dataset,
@@ -15,9 +15,16 @@ from src.extract import (
 )
 from src.load import create_tables, save_dataframe
 from src.observatory_db import (
+    complete_discovery_request,
+    create_discovery_request,
     initialize_default_topic,
     initialize_observatory_database,
     load_observatory_table,
+    load_repository_registry,
+    upsert_repository,
+)
+from src.observatory_discovery import (
+    discover_gerontocracy_repositories,
 )
 
 
@@ -1662,6 +1669,72 @@ app_ui = ui.page_fluid(
                 "data sources related to gerontocracy."
             ),
 
+            ui.div(
+                ui.strong("Stage 1 — Repository Discovery"),
+                ui.br(),
+                (
+                    "Describe the data object you need. The current "
+                    "discovery engine reviews a verified catalogue of "
+                    "official repositories and saves relevant sources "
+                    "to the persistent PostgreSQL registry."
+                ),
+                class_="alert alert-primary mt-3",
+            ),
+
+            ui.input_text_area(
+                "discovery_prompt",
+                "What data do you want to find?",
+                value=(
+                    "Find authoritative data repositories for analysing "
+                    "gerontocracy in Greece compared with the European "
+                    "Union. Include demographic ageing, political power "
+                    "and representation, wealth and assets, housing, "
+                    "labour-market position, social protection and "
+                    "intergenerational opportunity."
+                ),
+                rows=6,
+                width="100%",
+            ),
+
+            ui.input_action_button(
+                "discover_sources",
+                "Discover Candidate Repositories",
+                class_="btn-primary",
+            ),
+
+            ui.div(
+                ui.output_text(
+                    "discovery_status"
+                ),
+                class_="mt-3",
+            ),
+
+            ui.h4(
+                "Repository Registry",
+                class_="mt-4",
+            ),
+
+            ui.p(
+                "Repositories keep a permanent ID. Re-discovered links "
+                "are updated rather than duplicated; new links are appended."
+            ),
+
+            ui.output_ui(
+                "repository_registry"
+            ),
+
+            ui.h4(
+                "Discovery Execution History",
+                class_="mt-4",
+            ),
+
+            ui.div(
+                ui.output_table(
+                    "discovery_history_table"
+                ),
+                style="overflow-x: auto;",
+            ),
+
             ui.h4(
                 "Current Observatory Topics",
                 class_="mt-4",
@@ -1672,12 +1745,13 @@ app_ui = ui.page_fluid(
             ),
 
             ui.div(
-                ui.strong("Next stage: "),
+                ui.strong("Architecture note: "),
                 (
-                    "a prompt-based discovery interface will "
-                    "identify candidate data repositories."
+                    "this stage creates the auditable repository registry. "
+                    "Live web/AI discovery, refresh pipelines, OSEMN and "
+                    "agent conclusions will be layered on top of it."
                 ),
-                class_="alert alert-info mt-3",
+                class_="alert alert-light border mt-3",
             ),
         ),
 
@@ -1867,6 +1941,368 @@ def server(
     output,
     session,
 ):
+
+    discovery_refresh = reactive.Value(0)
+    discovery_message = reactive.Value(
+        "Ready to discover repository candidates."
+    )
+
+    @reactive.effect
+    @reactive.event(input.discover_sources)
+    def run_repository_discovery():
+        prompt = (
+            input.discovery_prompt()
+            or ""
+        ).strip()
+
+        if not prompt:
+            discovery_message.set(
+                "Please enter a discovery prompt first."
+            )
+            return
+
+        request_id = None
+
+        try:
+            topics = load_observatory_table(
+                "observatory_topics"
+            )
+
+            if not topics:
+                raise RuntimeError(
+                    "No Observatory topic is registered."
+                )
+
+            topic_id = int(
+                topics[0]["topic_id"]
+            )
+
+            request = create_discovery_request(
+                topic_id=topic_id,
+                prompt=prompt,
+            )
+
+            request_id = request[
+                "request_id"
+            ]
+
+            candidates = (
+                discover_gerontocracy_repositories(
+                    prompt
+                )
+            )
+
+            saved_ids = []
+
+            for candidate in candidates:
+                repository = upsert_repository(
+                    topic_id=topic_id,
+                    provider=candidate[
+                        "provider"
+                    ],
+                    repository_name=candidate[
+                        "repository_name"
+                    ],
+                    url=candidate[
+                        "url"
+                    ],
+                    description=candidate.get(
+                        "description"
+                    ),
+                    dimension=candidate.get(
+                        "dimension"
+                    ),
+                    geography=candidate.get(
+                        "geography"
+                    ),
+                    data_format=candidate.get(
+                        "data_format"
+                    ),
+                    refresh_frequency=(
+                        candidate.get(
+                            "refresh_frequency"
+                        )
+                    ),
+                    status="CANDIDATE",
+                    relevance_score=(
+                        candidate.get(
+                            "relevance_score"
+                        )
+                    ),
+                )
+
+                saved_ids.append(
+                    repository[
+                        "repository_id"
+                    ]
+                )
+
+            complete_discovery_request(
+                request_id=request_id,
+                candidates_found=len(
+                    candidates
+                ),
+                status="SUCCESS",
+                notes=(
+                    "Repository IDs: "
+                    + ", ".join(
+                        str(item)
+                        for item in saved_ids
+                    )
+                ),
+            )
+
+            discovery_message.set(
+                f"Discovery completed. "
+                f"{len(candidates)} candidate "
+                "repositories were reviewed and "
+                "saved/updated in PostgreSQL."
+            )
+
+            discovery_refresh.set(
+                discovery_refresh.get() + 1
+            )
+
+        except Exception as exc:
+            if request_id is not None:
+                try:
+                    complete_discovery_request(
+                        request_id=request_id,
+                        candidates_found=0,
+                        status="FAILED",
+                        notes=str(exc),
+                    )
+                except Exception:
+                    pass
+
+            discovery_message.set(
+                "Discovery failed: "
+                + str(exc)
+            )
+
+    @output
+    @render.text
+    def discovery_status():
+        return discovery_message.get()
+
+    @output
+    @render.ui
+    def repository_registry():
+        discovery_refresh.get()
+
+        try:
+            repositories = (
+                load_repository_registry(
+                    topic_id=1
+                )
+            )
+
+        except Exception:
+            return ui.div(
+                "PostgreSQL Observatory is not "
+                "available in this environment.",
+                class_="alert alert-warning",
+            )
+
+        if not repositories:
+            return ui.div(
+                "No repositories registered yet. "
+                "Run the discovery prompt above.",
+                class_="alert alert-secondary",
+            )
+
+        cards = []
+
+        for repository in repositories:
+            score = repository.get(
+                "relevance_score"
+            )
+
+            if score is None:
+                score_text = "Not scored"
+            else:
+                score_text = (
+                    f"{float(score):.0f}/100"
+                )
+
+            repository_id = int(
+                repository[
+                    "repository_id"
+                ]
+            )
+
+            cards.append(
+                ui.div(
+                    ui.div(
+                        ui.div(
+                            ui.strong(
+                                f"SRC-{repository_id:04d}"
+                            ),
+                            ui.span(
+                                repository.get(
+                                    "status",
+                                    "CANDIDATE",
+                                ),
+                                class_=(
+                                    "badge text-bg-secondary "
+                                    "ms-2"
+                                ),
+                            ),
+                        ),
+                        ui.h5(
+                            repository[
+                                "repository_name"
+                            ],
+                            class_="mt-2 mb-1",
+                        ),
+                        ui.p(
+                            repository.get(
+                                "description"
+                            )
+                            or "",
+                            class_="mb-2",
+                        ),
+                        ui.p(
+                            ui.strong(
+                                "Provider: "
+                            ),
+                            repository.get(
+                                "provider"
+                            )
+                            or "",
+                            ui.br(),
+                            ui.strong(
+                                "Dimension: "
+                            ),
+                            repository.get(
+                                "dimension"
+                            )
+                            or "",
+                            ui.br(),
+                            ui.strong(
+                                "Geography: "
+                            ),
+                            repository.get(
+                                "geography"
+                            )
+                            or "",
+                            ui.br(),
+                            ui.strong(
+                                "Format: "
+                            ),
+                            repository.get(
+                                "data_format"
+                            )
+                            or "",
+                            ui.br(),
+                            ui.strong(
+                                "Refresh: "
+                            ),
+                            repository.get(
+                                "refresh_frequency"
+                            )
+                            or "",
+                            ui.br(),
+                            ui.strong(
+                                "Relevance: "
+                            ),
+                            score_text,
+                            class_="small",
+                        ),
+                        ui.a(
+                            "Open repository",
+                            href=repository[
+                                "url"
+                            ],
+                            target="_blank",
+                            class_=(
+                                "btn btn-outline-primary "
+                                "btn-sm"
+                            ),
+                        ),
+                        class_="card-body",
+                    ),
+                    class_=(
+                        "card shadow-sm h-100"
+                    ),
+                )
+            )
+
+        return ui.div(
+            *(
+                ui.div(
+                    card,
+                    class_=(
+                        "col-xl-4 col-lg-6 "
+                        "col-md-6"
+                    ),
+                )
+                for card in cards
+            ),
+            class_="row g-3",
+        )
+
+    @output
+    @render.table
+    def discovery_history_table():
+        discovery_refresh.get()
+
+        try:
+            runs = load_observatory_table(
+                "discovery_requests"
+            )
+
+        except Exception:
+            return pd.DataFrame(
+                [
+                    {
+                        "Status": (
+                            "PostgreSQL Observatory "
+                            "not available locally"
+                        )
+                    }
+                ]
+            )
+
+        if not runs:
+            return pd.DataFrame(
+                [
+                    {
+                        "Status": (
+                            "No discovery executions yet"
+                        )
+                    }
+                ]
+            )
+
+        df = pd.DataFrame(runs)
+
+        columns = [
+            "request_id",
+            "execution_date",
+            "prompt",
+            "status",
+            "candidates_found",
+        ]
+
+        return (
+            df[columns]
+            .sort_values(
+                "request_id",
+                ascending=False,
+            )
+            .rename(
+                columns={
+                    "request_id": "Execution ID",
+                    "execution_date": "Execution Date",
+                    "prompt": "Prompt",
+                    "status": "Status",
+                    "candidates_found": (
+                        "Candidates Found"
+                    ),
+                }
+            )
+        )
 
     @output
     @render.table

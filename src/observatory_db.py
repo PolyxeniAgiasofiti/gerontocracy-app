@@ -107,6 +107,25 @@ def initialize_observatory_database():
                 """
             )
 
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS discovery_requests (
+                    request_id BIGSERIAL PRIMARY KEY,
+                    topic_id BIGINT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    execution_date TIMESTAMPTZ NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT NOT NULL DEFAULT 'RUNNING',
+                    candidates_found INTEGER NOT NULL DEFAULT 0,
+                    notes TEXT,
+                    CONSTRAINT fk_discovery_topic
+                        FOREIGN KEY (topic_id)
+                        REFERENCES observatory_topics(topic_id)
+                        ON DELETE CASCADE
+                );
+                """
+            )
+
         conn.commit()
 
     print(
@@ -126,6 +145,7 @@ def load_observatory_table(table_name):
         "observatory_topics",
         "repositories",
         "repository_runs",
+        "discovery_requests",
     }
 
     if table_name not in allowed_tables:
@@ -239,3 +259,178 @@ def initialize_default_topic():
     )
 
     return topic
+
+
+def create_discovery_request(topic_id, prompt):
+    """
+    Save one repository-discovery execution.
+    """
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO discovery_requests (
+                    topic_id,
+                    prompt
+                )
+                VALUES (%s, %s)
+                RETURNING *;
+                """,
+                (topic_id, prompt),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+
+    return dict(row)
+
+
+def complete_discovery_request(
+    request_id,
+    candidates_found,
+    status="SUCCESS",
+    notes=None,
+):
+    """
+    Mark a discovery execution as completed.
+    """
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                UPDATE discovery_requests
+                SET status = %s,
+                    candidates_found = %s,
+                    notes = %s
+                WHERE request_id = %s
+                RETURNING *;
+                """,
+                (
+                    status,
+                    candidates_found,
+                    notes,
+                    request_id,
+                ),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+
+    return dict(row) if row else None
+
+
+def upsert_repository(
+    topic_id,
+    provider,
+    repository_name,
+    url,
+    description=None,
+    dimension=None,
+    geography=None,
+    data_format=None,
+    refresh_frequency=None,
+    status="CANDIDATE",
+    relevance_score=None,
+):
+    """
+    Insert a new repository or refresh its metadata.
+
+    The original date_added is preserved. Re-discovered
+    repositories are not duplicated; last_checked is updated.
+    """
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO repositories (
+                    topic_id,
+                    provider,
+                    repository_name,
+                    url,
+                    description,
+                    dimension,
+                    geography,
+                    data_format,
+                    refresh_frequency,
+                    status,
+                    relevance_score,
+                    last_checked
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (topic_id, url)
+                DO UPDATE SET
+                    provider = EXCLUDED.provider,
+                    repository_name = EXCLUDED.repository_name,
+                    description = EXCLUDED.description,
+                    dimension = EXCLUDED.dimension,
+                    geography = EXCLUDED.geography,
+                    data_format = EXCLUDED.data_format,
+                    refresh_frequency = EXCLUDED.refresh_frequency,
+                    relevance_score = EXCLUDED.relevance_score,
+                    last_checked = CURRENT_TIMESTAMP
+                RETURNING *;
+                """,
+                (
+                    topic_id,
+                    provider,
+                    repository_name,
+                    url,
+                    description,
+                    dimension,
+                    geography,
+                    data_format,
+                    refresh_frequency,
+                    status,
+                    relevance_score,
+                ),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+
+    return dict(row)
+
+
+def load_repository_registry(topic_id=None):
+    """
+    Read the repository registry, optionally for one topic.
+    """
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+
+            if topic_id is None:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM repositories
+                    ORDER BY repository_id;
+                    """
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM repositories
+                    WHERE topic_id = %s
+                    ORDER BY repository_id;
+                    """,
+                    (topic_id,),
+                )
+
+            return [
+                dict(row)
+                for row in cursor.fetchall()
+            ]
