@@ -14,6 +14,7 @@ from src.extract import (
     get_youth_housing_overburden_eu_countries_dataset,
 )
 from src.load import create_tables, save_dataframe
+from src.observatory_db import initialize_observatory_database
 
 
 DB_PATH = "database/gerontocracy.db"
@@ -283,6 +284,7 @@ def table_has_data(table_name):
 
 
 def initialize_database():
+    initialize_observatory_database()
     """
     Use cached SQLite data and download only missing datasets.
     """
