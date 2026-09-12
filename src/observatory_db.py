@@ -126,6 +126,42 @@ def initialize_observatory_database():
                 """
             )
 
+            # Add review/refresh audit fields safely to existing databases.
+            cursor.execute(
+                """
+                ALTER TABLE repositories
+                ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+                """
+            )
+
+            cursor.execute(
+                """
+                ALTER TABLE repository_runs
+                ADD COLUMN IF NOT EXISTS http_status INTEGER;
+                """
+            )
+
+            cursor.execute(
+                """
+                ALTER TABLE repository_runs
+                ADD COLUMN IF NOT EXISTS content_type TEXT;
+                """
+            )
+
+            cursor.execute(
+                """
+                ALTER TABLE repository_runs
+                ADD COLUMN IF NOT EXISTS last_modified TEXT;
+                """
+            )
+
+            cursor.execute(
+                """
+                ALTER TABLE repository_runs
+                ADD COLUMN IF NOT EXISTS etag TEXT;
+                """
+            )
+
         conn.commit()
 
     print(
@@ -426,6 +462,211 @@ def load_repository_registry(topic_id=None):
                     FROM repositories
                     WHERE topic_id = %s
                     ORDER BY repository_id;
+                    """,
+                    (topic_id,),
+                )
+
+            return [
+                dict(row)
+                for row in cursor.fetchall()
+            ]
+
+
+def get_repository(repository_id):
+    """Return one repository by ID."""
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                SELECT *
+                FROM repositories
+                WHERE repository_id = %s;
+                """,
+                (repository_id,),
+            )
+            row = cursor.fetchone()
+
+    return dict(row) if row else None
+
+
+def set_repository_status(repository_id, status):
+    """Approve, reject or otherwise update a repository review status."""
+
+    allowed_statuses = {
+        "CANDIDATE",
+        "APPROVED",
+        "REJECTED",
+        "DISABLED",
+    }
+
+    if status not in allowed_statuses:
+        raise ValueError(
+            f"Unsupported repository status: {status}"
+        )
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                UPDATE repositories
+                SET status = %s,
+                    reviewed_at = CURRENT_TIMESTAMP
+                WHERE repository_id = %s
+                RETURNING *;
+                """,
+                (status, repository_id),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+
+    return dict(row) if row else None
+
+
+def approve_all_candidate_repositories(topic_id):
+    """Approve all current candidate repositories for one topic."""
+
+    with get_observatory_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE repositories
+                SET status = 'APPROVED',
+                    reviewed_at = CURRENT_TIMESTAMP
+                WHERE topic_id = %s
+                  AND status = 'CANDIDATE';
+                """,
+                (topic_id,),
+            )
+            count = cursor.rowcount
+        conn.commit()
+
+    return count
+
+
+def get_latest_successful_repository_hash(repository_id):
+    """Return the latest successful content fingerprint for a repository."""
+
+    with get_observatory_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT content_hash
+                FROM repository_runs
+                WHERE repository_id = %s
+                  AND status = 'SUCCESS'
+                  AND content_hash IS NOT NULL
+                ORDER BY execution_date DESC, run_id DESC
+                LIMIT 1;
+                """,
+                (repository_id,),
+            )
+            row = cursor.fetchone()
+
+    return row[0] if row else None
+
+
+def create_repository_run(
+    repository_id,
+    status,
+    changed=None,
+    content_hash=None,
+    notes=None,
+    http_status=None,
+    content_type=None,
+    last_modified=None,
+    etag=None,
+):
+    """Write one audited repository refresh/check execution."""
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO repository_runs (
+                    repository_id,
+                    status,
+                    changed,
+                    content_hash,
+                    notes,
+                    http_status,
+                    content_type,
+                    last_modified,
+                    etag
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s
+                )
+                RETURNING *;
+                """,
+                (
+                    repository_id,
+                    status,
+                    changed,
+                    content_hash,
+                    notes,
+                    http_status,
+                    content_type,
+                    last_modified,
+                    etag,
+                ),
+            )
+            row = cursor.fetchone()
+
+            cursor.execute(
+                """
+                UPDATE repositories
+                SET last_checked = CURRENT_TIMESTAMP
+                WHERE repository_id = %s;
+                """,
+                (repository_id,),
+            )
+
+        conn.commit()
+
+    return dict(row)
+
+
+def load_repository_runs(topic_id=None):
+    """Read refresh/check history with repository names."""
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+
+            if topic_id is None:
+                cursor.execute(
+                    """
+                    SELECT
+                        rr.*,
+                        r.repository_name,
+                        r.provider
+                    FROM repository_runs rr
+                    JOIN repositories r
+                      ON r.repository_id = rr.repository_id
+                    ORDER BY rr.execution_date DESC, rr.run_id DESC;
+                    """
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT
+                        rr.*,
+                        r.repository_name,
+                        r.provider
+                    FROM repository_runs rr
+                    JOIN repositories r
+                      ON r.repository_id = rr.repository_id
+                    WHERE r.topic_id = %s
+                    ORDER BY rr.execution_date DESC, rr.run_id DESC;
                     """,
                     (topic_id,),
                 )

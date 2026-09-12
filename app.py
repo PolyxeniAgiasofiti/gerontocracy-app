@@ -15,16 +15,25 @@ from src.extract import (
 )
 from src.load import create_tables, save_dataframe
 from src.observatory_db import (
+    approve_all_candidate_repositories,
     complete_discovery_request,
     create_discovery_request,
+    create_repository_run,
+    get_latest_successful_repository_hash,
+    get_repository,
     initialize_default_topic,
     initialize_observatory_database,
     load_observatory_table,
     load_repository_registry,
+    load_repository_runs,
+    set_repository_status,
     upsert_repository,
 )
 from src.observatory_discovery import (
     discover_gerontocracy_repositories,
+)
+from src.observatory_refresh import (
+    check_repository_source,
 )
 
 
@@ -1723,6 +1732,77 @@ app_ui = ui.page_fluid(
                 "repository_registry"
             ),
 
+            ui.div(
+                ui.strong("Stage 2 — Review & Refresh"),
+                ui.br(),
+                (
+                    "Approve trusted repositories before they enter "
+                    "the data pipeline. A refresh check creates an "
+                    "audited repository run and records whether the "
+                    "source appears to have changed since the previous "
+                    "successful check."
+                ),
+                class_="alert alert-warning mt-4",
+            ),
+
+            ui.input_select(
+                "repository_to_review",
+                "Select repository",
+                choices={
+                    "": "Select a repository..."
+                },
+                width="100%",
+            ),
+
+            ui.div(
+                ui.input_action_button(
+                    "approve_selected_repository",
+                    "Approve Selected",
+                    class_="btn-success me-2",
+                ),
+                ui.input_action_button(
+                    "reject_selected_repository",
+                    "Reject Selected",
+                    class_="btn-outline-danger me-2",
+                ),
+                ui.input_action_button(
+                    "approve_all_repositories",
+                    "Approve All Candidates",
+                    class_="btn-outline-success me-2",
+                ),
+                ui.input_action_button(
+                    "refresh_selected_repository",
+                    "Check / Refresh Selected",
+                    class_="btn-primary",
+                ),
+                class_="mt-2",
+            ),
+
+            ui.div(
+                ui.output_text(
+                    "repository_review_status"
+                ),
+                class_="mt-3",
+            ),
+
+            ui.h4(
+                "Repository Refresh History",
+                class_="mt-4",
+            ),
+
+            ui.p(
+                "At this stage, refresh means checking source "
+                "availability and change signals. Dataset extraction "
+                "and OSEMN processing are added in the next stage."
+            ),
+
+            ui.div(
+                ui.output_table(
+                    "repository_run_history"
+                ),
+                style="overflow-x: auto;",
+            ),
+
             ui.h4(
                 "Discovery Execution History",
                 class_="mt-4",
@@ -1946,6 +2026,9 @@ def server(
     discovery_message = reactive.Value(
         "Ready to discover repository candidates."
     )
+    review_message = reactive.Value(
+        "Select a repository to review or refresh."
+    )
 
     @reactive.effect
     @reactive.event(input.discover_sources)
@@ -2080,6 +2163,272 @@ def server(
                 + str(exc)
             )
 
+    @reactive.effect
+    def update_repository_selector():
+        discovery_refresh.get()
+
+        try:
+            repositories = load_repository_registry(
+                topic_id=1
+            )
+        except Exception:
+            return
+
+        choices = {
+            "": "Select a repository..."
+        }
+
+        for repository in repositories:
+            repository_id = int(
+                repository["repository_id"]
+            )
+            choices[str(repository_id)] = (
+                f"SRC-{repository_id:04d} — "
+                f"{repository.get('provider', '')} — "
+                f"{repository.get('repository_name', '')} "
+                f"[{repository.get('status', 'CANDIDATE')}]"
+            )
+
+        ui.update_select(
+            "repository_to_review",
+            choices=choices,
+            session=session,
+        )
+
+    def selected_repository_id():
+        value = input.repository_to_review()
+        if not value:
+            return None
+        return int(value)
+
+    @reactive.effect
+    @reactive.event(input.approve_selected_repository)
+    def approve_selected_repository():
+        repository_id = selected_repository_id()
+
+        if repository_id is None:
+            review_message.set(
+                "Select a repository first."
+            )
+            return
+
+        repository = set_repository_status(
+            repository_id,
+            "APPROVED",
+        )
+
+        review_message.set(
+            f"SRC-{repository_id:04d} approved: "
+            f"{repository['repository_name']}."
+        )
+        discovery_refresh.set(
+            discovery_refresh.get() + 1
+        )
+
+    @reactive.effect
+    @reactive.event(input.reject_selected_repository)
+    def reject_selected_repository():
+        repository_id = selected_repository_id()
+
+        if repository_id is None:
+            review_message.set(
+                "Select a repository first."
+            )
+            return
+
+        repository = set_repository_status(
+            repository_id,
+            "REJECTED",
+        )
+
+        review_message.set(
+            f"SRC-{repository_id:04d} rejected: "
+            f"{repository['repository_name']}."
+        )
+        discovery_refresh.set(
+            discovery_refresh.get() + 1
+        )
+
+    @reactive.effect
+    @reactive.event(input.approve_all_repositories)
+    def approve_all_repositories():
+        count = approve_all_candidate_repositories(
+            topic_id=1
+        )
+        review_message.set(
+            f"Approved {count} candidate repositories."
+        )
+        discovery_refresh.set(
+            discovery_refresh.get() + 1
+        )
+
+    @reactive.effect
+    @reactive.event(input.refresh_selected_repository)
+    def refresh_selected_repository():
+        repository_id = selected_repository_id()
+
+        if repository_id is None:
+            review_message.set(
+                "Select a repository first."
+            )
+            return
+
+        repository = get_repository(
+            repository_id
+        )
+
+        if repository is None:
+            review_message.set(
+                "Repository not found."
+            )
+            return
+
+        if repository.get("status") != "APPROVED":
+            review_message.set(
+                "Approve this repository before refreshing it."
+            )
+            return
+
+        review_message.set(
+            f"Checking SRC-{repository_id:04d}..."
+        )
+
+        previous_hash = (
+            get_latest_successful_repository_hash(
+                repository_id
+            )
+        )
+
+        result = check_repository_source(
+            repository["url"]
+        )
+
+        changed = None
+
+        if result["status"] == "SUCCESS":
+            if previous_hash is not None:
+                changed = (
+                    result["content_hash"]
+                    != previous_hash
+                )
+
+        create_repository_run(
+            repository_id=repository_id,
+            status=result["status"],
+            changed=changed,
+            content_hash=result.get(
+                "content_hash"
+            ),
+            notes=result.get("notes"),
+            http_status=result.get(
+                "http_status"
+            ),
+            content_type=result.get(
+                "content_type"
+            ),
+            last_modified=result.get(
+                "last_modified"
+            ),
+            etag=result.get("etag"),
+        )
+
+        if result["status"] != "SUCCESS":
+            message = (
+                f"SRC-{repository_id:04d} check failed. "
+                f"{result.get('notes', '')}"
+            )
+        elif previous_hash is None:
+            message = (
+                f"SRC-{repository_id:04d} is reachable. "
+                "Baseline fingerprint stored."
+            )
+        elif changed:
+            message = (
+                f"SRC-{repository_id:04d} is reachable and "
+                "appears to have changed since the previous check."
+            )
+        else:
+            message = (
+                f"SRC-{repository_id:04d} is reachable. "
+                "No change detected since the previous check."
+            )
+
+        review_message.set(message)
+        discovery_refresh.set(
+            discovery_refresh.get() + 1
+        )
+
+    @output
+    @render.text
+    def repository_review_status():
+        return review_message.get()
+
+    @output
+    @render.table
+    def repository_run_history():
+        discovery_refresh.get()
+
+        try:
+            runs = load_repository_runs(
+                topic_id=1
+            )
+        except Exception:
+            return pd.DataFrame(
+                [{
+                    "Status": (
+                        "PostgreSQL Observatory "
+                        "not available locally"
+                    )
+                }]
+            )
+
+        if not runs:
+            return pd.DataFrame(
+                [{
+                    "Status": (
+                        "No repository refresh "
+                        "executions yet"
+                    )
+                }]
+            )
+
+        df = pd.DataFrame(runs)
+
+        columns = [
+            "run_id",
+            "execution_date",
+            "repository_id",
+            "provider",
+            "repository_name",
+            "status",
+            "changed",
+            "http_status",
+            "content_type",
+        ]
+
+        available_columns = [
+            column
+            for column in columns
+            if column in df.columns
+        ]
+
+        return (
+            df[available_columns]
+            .rename(
+                columns={
+                    "run_id": "Run ID",
+                    "execution_date": "Execution Date",
+                    "repository_id": "Repository ID",
+                    "provider": "Provider",
+                    "repository_name": "Repository",
+                    "status": "Status",
+                    "changed": "Changed",
+                    "http_status": "HTTP",
+                    "content_type": "Content Type",
+                }
+            )
+        )
+
     @output
     @render.text
     def discovery_status():
@@ -2144,8 +2493,14 @@ def server(
                                     "CANDIDATE",
                                 ),
                                 class_=(
-                                    "badge text-bg-secondary "
-                                    "ms-2"
+                                    "badge ms-2 "
+                                    + (
+                                        "text-bg-success"
+                                        if repository.get("status") == "APPROVED"
+                                        else "text-bg-danger"
+                                        if repository.get("status") == "REJECTED"
+                                        else "text-bg-secondary"
+                                    )
                                 ),
                             ),
                         ),
@@ -2207,6 +2562,21 @@ def server(
                                 "Relevance: "
                             ),
                             score_text,
+                            ui.br(),
+                            ui.strong(
+                                "Added: "
+                            ),
+                            str(
+                                repository.get("date_added") or ""
+                            ),
+                            ui.br(),
+                            ui.strong(
+                                "Last checked: "
+                            ),
+                            str(
+                                repository.get("last_checked")
+                                or "Never"
+                            ),
                             class_="small",
                         ),
                         ui.a(
