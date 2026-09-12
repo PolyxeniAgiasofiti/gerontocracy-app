@@ -14,7 +14,11 @@ from src.extract import (
     get_youth_housing_overburden_eu_countries_dataset,
 )
 from src.load import create_tables, save_dataframe
-from src.observatory_db import initialize_observatory_database
+from src.observatory_db import (
+    initialize_default_topic,
+    initialize_observatory_database,
+    load_observatory_table,
+)
 
 
 DB_PATH = "database/gerontocracy.db"
@@ -284,7 +288,6 @@ def table_has_data(table_name):
 
 
 def initialize_database():
-    initialize_observatory_database()
     """
     Use cached SQLite data and download only missing datasets.
     """
@@ -346,6 +349,8 @@ def initialize_database():
 
 
 initialize_database()
+initialize_observatory_database()
+initialize_default_topic()
 
 
 def load_table(table_name):
@@ -1646,6 +1651,37 @@ app_ui = ui.page_fluid(
 
     ui.navset_tab(
         ui.nav_panel(
+            "Data Observatory",
+
+            ui.h3(
+                "Gerontocracy Data Observatory"
+            ),
+
+            ui.p(
+                "Discover, register, refresh and analyse "
+                "data sources related to gerontocracy."
+            ),
+
+            ui.h4(
+                "Current Observatory Topics",
+                class_="mt-4",
+            ),
+
+            ui.output_table(
+                "observatory_topics_table"
+            ),
+
+            ui.div(
+                ui.strong("Next stage: "),
+                (
+                    "a prompt-based discovery interface will "
+                    "identify candidate data repositories."
+                ),
+                class_="alert alert-info mt-3",
+            ),
+        ),
+
+        ui.nav_panel(
             "Overview",
 
             ui.output_ui(
@@ -1831,6 +1867,70 @@ def server(
     output,
     session,
 ):
+
+    @output
+    @render.table
+    def observatory_topics_table():
+
+        try:
+            topics = load_observatory_table(
+                "observatory_topics"
+            )
+
+        except Exception:
+            return pd.DataFrame(
+                [
+                    {
+                        "Status": (
+                            "PostgreSQL Observatory "
+                            "not available locally"
+                        )
+                    }
+                ]
+            )
+
+        if not topics:
+            return pd.DataFrame(
+                [
+                    {
+                        "Status": (
+                            "No Observatory topics "
+                            "registered yet"
+                        )
+                    }
+                ]
+            )
+
+        df = pd.DataFrame(topics)
+
+        columns = [
+            "topic_id",
+            "name",
+            "description",
+            "geography",
+            "status",
+            "created_at",
+        ]
+
+        available_columns = [
+            column
+            for column in columns
+            if column in df.columns
+        ]
+
+        return (
+            df[available_columns]
+            .rename(
+                columns={
+                    "topic_id": "Topic ID",
+                    "name": "Topic",
+                    "description": "Description",
+                    "geography": "Geography",
+                    "status": "Status",
+                    "created_at": "Created",
+                }
+            )
+        )
 
     @output
     @render.ui

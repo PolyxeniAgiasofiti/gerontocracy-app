@@ -150,3 +150,92 @@ def load_observatory_table(table_name):
                 dict(row)
                 for row in cursor.fetchall()
             ]
+
+
+def get_or_create_topic(
+    name,
+    description=None,
+    geography=None,
+):
+    """
+    Return an existing Observatory topic or create it.
+
+    This avoids creating duplicate topics every time
+    the application is restarted.
+    """
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+
+            cursor.execute(
+                """
+                SELECT *
+                FROM observatory_topics
+                WHERE LOWER(name) = LOWER(%s)
+                ORDER BY topic_id
+                LIMIT 1;
+                """,
+                (name,),
+            )
+
+            existing_topic = cursor.fetchone()
+
+            if existing_topic:
+                return dict(existing_topic)
+
+            cursor.execute(
+                """
+                INSERT INTO observatory_topics (
+                    name,
+                    description,
+                    geography
+                )
+                VALUES (%s, %s, %s)
+                RETURNING *;
+                """,
+                (
+                    name,
+                    description,
+                    geography,
+                ),
+            )
+
+            new_topic = cursor.fetchone()
+
+        conn.commit()
+
+    return dict(new_topic)
+
+
+def initialize_default_topic():
+    """
+    Create the default Gerontocracy topic when the
+    Observatory PostgreSQL database is available.
+    """
+
+    if not OBSERVATORY_DATABASE_URL:
+        print(
+            "Observatory topic initialization skipped: "
+            "PostgreSQL is not configured locally."
+        )
+        return None
+
+    topic = get_or_create_topic(
+        name="Gerontocracy in Greece",
+        description=(
+            "Study of the concentration of demographic, "
+            "political, economic and social resources "
+            "across generations, with focus on Greece "
+            "and comparison with the European Union."
+        ),
+        geography="Greece + European Union",
+    )
+
+    print(
+        f"Observatory topic ready: "
+        f"{topic['topic_id']} - {topic['name']}"
+    )
+
+    return topic
