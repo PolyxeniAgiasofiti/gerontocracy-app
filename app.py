@@ -1738,9 +1738,9 @@ app_ui = ui.page_fluid(
                 (
                     "Approve trusted repositories before they enter "
                     "the data pipeline. A refresh check creates an "
-                    "audited repository run and records whether the "
-                    "source appears to have changed since the previous "
-                    "successful check."
+                    "audited repository run and confirms availability. "
+                    "Reliable data-change detection is performed on "
+                    "actual data objects in Stage 3."
                 ),
                 class_="alert alert-warning mt-4",
             ),
@@ -1791,9 +1791,10 @@ app_ui = ui.page_fluid(
             ),
 
             ui.p(
-                "At this stage, refresh means checking source "
-                "availability and change signals. Dataset extraction "
-                "and OSEMN processing are added in the next stage."
+                "At this stage, refresh confirms repository availability. "
+                "HTML landing pages are not treated as reliable data "
+                "change signals. Dataset extraction, snapshots and "
+                "change detection are added in Stage 3."
             ),
 
             ui.div(
@@ -2304,13 +2305,19 @@ def server(
         )
 
         changed = None
+        current_hash = result.get(
+            "content_hash"
+        )
 
-        if result["status"] == "SUCCESS":
-            if previous_hash is not None:
-                changed = (
-                    result["content_hash"]
-                    != previous_hash
-                )
+        if (
+            result["status"] == "SUCCESS"
+            and current_hash is not None
+            and previous_hash is not None
+        ):
+            changed = (
+                current_hash
+                != previous_hash
+            )
 
         create_repository_run(
             repository_id=repository_id,
@@ -2337,6 +2344,14 @@ def server(
                 f"SRC-{repository_id:04d} check failed. "
                 f"{result.get('notes', '')}"
             )
+        elif current_hash is None:
+            message = (
+                f"SRC-{repository_id:04d} is reachable. "
+                "This is a repository landing page, so this stage "
+                "does not claim that the underlying dataset changed. "
+                "Dataset change detection will be performed on "
+                "Stage 3 data-object snapshots."
+            )
         elif previous_hash is None:
             message = (
                 f"SRC-{repository_id:04d} is reachable. "
@@ -2345,12 +2360,14 @@ def server(
         elif changed:
             message = (
                 f"SRC-{repository_id:04d} is reachable and "
-                "appears to have changed since the previous check."
+                "the versionable resource appears to have changed "
+                "since the previous check."
             )
         else:
             message = (
                 f"SRC-{repository_id:04d} is reachable. "
-                "No change detected since the previous check."
+                "No change detected in the versionable resource "
+                "since the previous check."
             )
 
         review_message.set(message)
