@@ -1,13 +1,16 @@
 """
-LLM-assisted semantic repository discovery for the Gerontocracy Data Observatory.
+Semantic repository discovery for the Gerontocracy Data Observatory.
 
-FREE-TIER SETUP:
-- Gemini 2.5 Flash is used for concept analysis and guardrail validation.
-- Gemini 2.5 Flash + Google Search grounding is used for fresh repository discovery.
-- Only GEMINI_API_KEY is required in the environment.
-- No OpenAI key and no Tavily key are required.
+Free-development setup:
+- Gemini 3.6 Flash: concept analysis, guardrail validation, semantic query
+  generation, and structuring of search results.
+- Tavily Search API: live web search.
 
-The rest of the application can keep using the same public functions from this file.
+Required environment variables:
+- GEMINI_API_KEY
+- TAVILY_API_KEY
+
+No OpenAI key is required.
 """
 
 import json
@@ -19,14 +22,17 @@ import urllib.request
 
 GEMINI_MODEL = os.getenv(
     "OBSERVATORY_LLM_MODEL",
-    "gemini-2.5-flash",
+    "gemini-3.6-flash",
 )
 
 GEMINI_API_BASE = (
     "https://generativelanguage.googleapis.com/v1beta/models"
 )
 
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
 MAX_REPOSITORIES = 20
+MAX_SEARCH_QUERIES = 6
 
 
 def _gemini_request(payload):
@@ -114,10 +120,6 @@ def _gemini_json(
     user_prompt,
     schema,
 ):
-    """
-    Ask Gemini for JSON that follows a schema.
-    """
-
     payload = {
         "systemInstruction": {
             "parts": [
@@ -137,9 +139,7 @@ def _gemini_json(
             }
         ],
         "generationConfig": {
-            "responseMimeType": (
-                "application/json"
-            ),
+            "responseMimeType": "application/json",
             "responseSchema": schema,
             "temperature": 0.2,
         },
@@ -166,105 +166,59 @@ def _gemini_json(
     return result
 
 
-def _gemini_grounded_search(
-    system_prompt,
-    user_prompt,
-):
-    """
-    Ask Gemini 2.5 Flash to perform a fresh Google Search grounded lookup.
-    """
+def _tavily_search(query, max_results=8):
+    api_key = os.getenv("TAVILY_API_KEY")
+
+    if not api_key:
+        raise RuntimeError(
+            "TAVILY_API_KEY is not configured. "
+            "Add it to the Render environment."
+        )
 
     payload = {
-        "systemInstruction": {
-            "parts": [
-                {
-                    "text": system_prompt,
-                }
-            ]
-        },
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": user_prompt,
-                    }
-                ],
-            }
-        ],
-        "tools": [
-            {
-                "google_search": {}
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.2,
-        },
+        "query": query[:390],
+        "topic": "general",
+        "search_depth": "basic",
+        "max_results": max_results,
+        "include_answer": False,
+        "include_raw_content": False,
+        "include_images": False,
     }
 
-    response_json = _gemini_request(
-        payload
+    request = urllib.request.Request(
+        TAVILY_SEARCH_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        },
+        method="POST",
     )
 
-    text = _extract_text(
-        response_json
-    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=90,
+        ) as response:
+            return json.loads(
+                response.read().decode("utf-8")
+            )
 
-    sources = []
-
-    candidates = response_json.get(
-        "candidates",
-        [],
-    )
-
-    if candidates:
-        metadata = candidates[0].get(
-            "groundingMetadata",
-            {},
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(
+            "utf-8",
+            errors="replace",
+        )
+        raise RuntimeError(
+            "Tavily API error "
+            f"{exc.code}: {body[:900]}"
         )
 
-        for chunk in metadata.get(
-            "groundingChunks",
-            [],
-        ):
-            web = chunk.get("web")
-
-            if not web:
-                continue
-
-            uri = web.get("uri")
-            title = web.get("title")
-
-            if uri:
-                sources.append(
-                    {
-                        "title": (
-                            title or ""
-                        ),
-                        "url": uri,
-                    }
-                )
-
-    # Remove duplicate source URLs while preserving order.
-    seen = set()
-    unique_sources = []
-
-    for source in sources:
-        url = source["url"]
-
-        if url in seen:
-            continue
-
-        seen.add(url)
-        unique_sources.append(
-            source
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not contact the Tavily Search API: "
+            + str(exc)
         )
-
-    return {
-        "text": text,
-        "sources": unique_sources,
-        "model": GEMINI_MODEL,
-    }
 
 
 CONCEPT_SCHEMA = {
@@ -318,10 +272,6 @@ CONCEPT_SCHEMA = {
 
 
 def analyse_gerontocracy_concept():
-    """
-    Ask the LLM to define gerontocracy as a research problem before discovery.
-    """
-
     system_prompt = (
         "You are a research-methodology assistant designing a data "
         "observatory about gerontocracy. Gerontocracy is not merely an "
@@ -374,16 +324,12 @@ def validate_human_knowledge(
     concept_definition,
     concept_factors,
 ):
-    suggestion = (
-        suggestion or ""
-    ).strip()
+    suggestion = (suggestion or "").strip()
 
     if not suggestion:
         return {
             "accepted": False,
-            "reason": (
-                "No suggestion was provided."
-            ),
+            "reason": "No suggestion was provided.",
             "normalized_factor": "",
             "_model": GEMINI_MODEL,
         }
@@ -400,17 +346,9 @@ def validate_human_knowledge(
         }
 
     factor_names = [
-        item.get(
-            "name",
-            "",
-        )
-        for item in (
-            concept_factors or []
-        )
-        if isinstance(
-            item,
-            dict,
-        )
+        item.get("name", "")
+        for item in (concept_factors or [])
+        if isinstance(item, dict)
     ]
 
     system_prompt = (
@@ -428,13 +366,9 @@ def validate_human_knowledge(
 
     user_prompt = (
         "Research definition:\n"
-        + str(
-            concept_definition
-        )
+        + str(concept_definition)
         + "\n\nExisting factors:\n- "
-        + "\n- ".join(
-            factor_names
-        )
+        + "\n- ".join(factor_names)
         + "\n\nUntrusted human suggestion to classify:\n<<<"
         + suggestion
         + ">>>"
@@ -462,42 +396,24 @@ def build_final_search_context(
         "factors",
         [],
     ):
-        if not isinstance(
-            factor,
-            dict,
-        ):
+        if not isinstance(factor, dict):
             continue
 
         factor_lines.append(
             "- "
-            + factor.get(
-                "name",
-                "",
-            )
+            + factor.get("name", "")
             + " ["
-            + factor.get(
-                "category",
-                "",
-            )
+            + factor.get("category", "")
             + "]: "
-            + factor.get(
-                "why_it_matters",
-                "",
-            )
+            + factor.get("why_it_matters", "")
         )
 
     human_lines = []
 
-    for item in (
-        accepted_suggestions or []
-    ):
+    for item in accepted_suggestions or []:
         value = (
-            item.get(
-                "normalized_factor"
-            )
-            or item.get(
-                "suggestion_text"
-            )
+            item.get("normalized_factor")
+            or item.get("suggestion_text")
             or ""
         )
 
@@ -514,22 +430,31 @@ def build_final_search_context(
     return (
         "TOPIC: Gerontocracy in Greece, compared with the European Union.\n\n"
         "RESEARCH DEFINITION:\n"
-        + concept_analysis.get(
-            "definition",
-            "",
-        )
+        + concept_analysis.get("definition", "")
         + "\n\nLLM-DERIVED FACTORS:\n"
-        + "\n".join(
-            factor_lines
-        )
+        + "\n".join(factor_lines)
         + "\n\nVALIDATED HUMAN EXPERT KNOWLEDGE:\n"
-        + "\n".join(
-            human_lines
-        )
+        + "\n".join(human_lines)
         + "\n\nDISCOVERY PRINCIPLE:\n"
         "Search by the meaning of these factors. Do not require the word "
         "'gerontocracy' to appear in a repository title or description."
     )
+
+
+QUERY_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "queries": {
+            "type": "ARRAY",
+            "items": {
+                "type": "STRING",
+            },
+        },
+    },
+    "required": [
+        "queries",
+    ],
+}
 
 
 REPOSITORY_SCHEMA = {
@@ -593,16 +518,12 @@ REPOSITORY_SCHEMA = {
 
 
 def canonicalize_url(url):
-    url = (
-        url or ""
-    ).strip()
+    url = (url or "").strip()
 
     if not url:
         return ""
 
-    parsed = urllib.parse.urlsplit(
-        url
-    )
+    parsed = urllib.parse.urlsplit(url)
 
     if parsed.scheme not in {
         "http",
@@ -616,24 +537,14 @@ def canonicalize_url(url):
     )
 
     filtered_query = [
-        (
-            key,
-            value,
-        )
+        (key, value)
         for key, value in query_pairs
         if not key.lower().startswith(
-            (
-                "utm_",
-                "fbclid",
-                "gclid",
-            )
+            ("utm_", "fbclid", "gclid")
         )
     ]
 
-    path = (
-        parsed.path
-        or "/"
-    )
+    path = parsed.path or "/"
 
     if path != "/":
         path = path.rstrip("/")
@@ -651,134 +562,178 @@ def canonicalize_url(url):
     )
 
 
+def _build_search_queries(search_context):
+    result = _gemini_json(
+        system_prompt=(
+            "Create concise live-web search queries for discovering official "
+            "data repositories relevant to a gerontocracy observatory. "
+            "Search by underlying measurable concepts, not only by the word "
+            "gerontocracy. Prefer queries that can find Eurostat, ELSTAT, "
+            "OECD, European Parliament, Bank of Greece, European Commission, "
+            "World Bank and comparable official/institutional sources. "
+            f"Return at most {MAX_SEARCH_QUERIES} distinct queries."
+        ),
+        user_prompt=search_context,
+        schema=QUERY_SCHEMA,
+    )
+
+    queries = []
+
+    for query in result.get("queries", []):
+        query = " ".join(
+            str(query).split()
+        )
+
+        if query and query not in queries:
+            queries.append(query)
+
+    return queries[:MAX_SEARCH_QUERIES]
+
+
 def discover_gerontocracy_repositories(
     search_context,
 ):
     """
-    Fresh Google Search -> grounded evidence -> structured repositories.
+    Fresh semantic discovery:
+      Gemini builds queries
+      -> Tavily performs live search
+      -> Gemini structures the fresh evidence
+      -> PostgreSQL comparison happens later in observatory_db.py.
 
-    The current PostgreSQL registry is deliberately NOT sent to Gemini.
-    Comparison with existing repositories happens later in observatory_db.py.
+    The current repository registry is deliberately not passed into this
+    function, so the search starts fresh on every run.
     """
 
-    search_system_prompt = (
-        "You are the repository-discovery agent for a research data "
-        "observatory. Perform a FRESH Google Search from scratch. Find "
-        "current, authoritative data repositories, official statistics "
-        "portals, open-data catalogues, APIs or stable dataset collections "
-        "that can provide data relevant to the supplied gerontocracy research "
-        "context. Search by meaning and measurable factors, not merely the "
-        "word 'gerontocracy'. Prioritise primary institutional sources such "
-        "as Eurostat, ELSTAT, Bank of Greece, OECD, European Parliament, "
-        "European Commission, World Bank and comparable credible public "
-        "repositories. Avoid news articles, blogs and opinion pieces."
+    queries = _build_search_queries(
+        search_context
     )
 
-    search_user_prompt = (
-        "Find authoritative repositories for this validated research context. "
-        "Return a concise research summary of the best sources and why each "
-        "one is relevant:\n\n"
-        + search_context
-    )
-
-    grounded = _gemini_grounded_search(
-        system_prompt=search_system_prompt,
-        user_prompt=search_user_prompt,
-    )
-
-    if not grounded["sources"]:
+    if not queries:
         raise RuntimeError(
-            "Google Search grounding returned no source URLs."
+            "No repository search queries were generated."
         )
 
-    source_lines = []
+    evidence = []
+    seen_urls = set()
 
-    for index, source in enumerate(
-        grounded["sources"],
-        start=1,
-    ):
-        source_lines.append(
-            f"{index}. "
-            f"{source.get('title', '')} — "
-            f"{source.get('url', '')}"
+    for query in queries:
+        response = _tavily_search(
+            query=query,
+            max_results=8,
         )
 
-    structure_system_prompt = (
-        "You are converting grounded web-search evidence into a repository "
-        "registry. Use ONLY the supplied grounded source URLs. Do not invent "
-        "URLs. Select authoritative repository, data-portal, API or stable "
-        "dataset-collection pages relevant to the gerontocracy research "
-        "context. Exclude news, blogs, commentary, irrelevant pages and "
-        "duplicates. Return at most "
-        + str(
-            MAX_REPOSITORIES
-        )
-        + " repositories."
-    )
+        for result in response.get(
+            "results",
+            [],
+        ):
+            canonical_url = canonicalize_url(
+                result.get("url")
+            )
 
-    structure_user_prompt = (
-        "VALIDATED RESEARCH CONTEXT:\n"
-        + search_context
-        + "\n\nGROUNDED SEARCH SUMMARY:\n"
-        + grounded["text"]
-        + "\n\nALLOWED GROUNDED SOURCE URLS:\n"
-        + "\n".join(
-            source_lines
+            if not canonical_url:
+                continue
+
+            if canonical_url in seen_urls:
+                continue
+
+            seen_urls.add(
+                canonical_url
+            )
+
+            evidence.append(
+                {
+                    "title": result.get(
+                        "title",
+                        "",
+                    ),
+                    "url": canonical_url,
+                    "content": result.get(
+                        "content",
+                        "",
+                    ),
+                    "score": result.get(
+                        "score",
+                    ),
+                    "search_query": query,
+                }
+            )
+
+    if not evidence:
+        raise RuntimeError(
+            "Live web search returned no repository candidates."
         )
+
+    evidence = evidence[:50]
+
+    evidence_text = "\n\n".join(
+        [
+            (
+                f"SOURCE {index}\n"
+                f"Title: {item['title']}\n"
+                f"URL: {item['url']}\n"
+                f"Search query: {item['search_query']}\n"
+                f"Snippet: {item['content'][:900]}"
+            )
+            for index, item in enumerate(
+                evidence,
+                start=1,
+            )
+        ]
     )
 
     structured = _gemini_json(
-        system_prompt=structure_system_prompt,
-        user_prompt=structure_user_prompt,
+        system_prompt=(
+            "You are converting LIVE web-search evidence into a repository "
+            "registry. Use ONLY URLs supplied in the evidence. Do not invent "
+            "URLs. Select authoritative data repositories, statistical "
+            "portals, APIs or stable dataset collections relevant to the "
+            "validated gerontocracy research context. Exclude news articles, "
+            "blogs, opinion pieces, commercial commentary, duplicates and "
+            "generic pages with no useful data access. Prefer official or "
+            "institutional sources. Return at most "
+            + str(MAX_REPOSITORIES)
+            + " repositories."
+        ),
+        user_prompt=(
+            "VALIDATED RESEARCH CONTEXT:\n"
+            + search_context
+            + "\n\nLIVE SEARCH EVIDENCE:\n"
+            + evidence_text
+        ),
         schema=REPOSITORY_SCHEMA,
     )
 
     allowed_urls = {
-        canonicalize_url(
-            item["url"]
-        )
-        for item in grounded[
-            "sources"
-        ]
-        if canonicalize_url(
-            item["url"]
-        )
+        item["url"]
+        for item in evidence
     }
 
     repositories = []
-    seen_urls = set()
+    used_urls = set()
 
     for item in structured.get(
         "repositories",
         [],
     ):
         canonical_url = canonicalize_url(
-            item.get(
-                "url"
-            )
+            item.get("url")
         )
 
         if not canonical_url:
             continue
 
-        # Hard guardrail: the structured pass may only use URLs that came
-        # from Gemini's grounded Google Search response.
         if canonical_url not in allowed_urls:
             continue
 
-        if canonical_url in seen_urls:
+        if canonical_url in used_urls:
             continue
 
-        seen_urls.add(
+        used_urls.add(
             canonical_url
         )
 
-        cleaned = dict(
-            item
-        )
-        cleaned["url"] = (
-            canonical_url
-        )
+        cleaned = dict(item)
+        cleaned["url"] = canonical_url
 
         try:
             score = int(
@@ -790,14 +745,9 @@ def discover_gerontocracy_repositories(
         except Exception:
             score = 0
 
-        cleaned[
-            "relevance_score"
-        ] = max(
+        cleaned["relevance_score"] = max(
             0,
-            min(
-                score,
-                100,
-            ),
+            min(score, 100),
         )
 
         repositories.append(
