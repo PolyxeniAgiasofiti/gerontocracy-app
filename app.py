@@ -15,25 +15,25 @@ from src.extract import (
 )
 from src.load import create_tables, save_dataframe
 from src.observatory_db import (
-    approve_all_candidate_repositories,
-    complete_discovery_request,
-    create_discovery_request,
-    create_repository_run,
-    get_latest_successful_repository_hash,
+    get_latest_concept_analysis,
     get_repository,
     initialize_default_topic,
     initialize_observatory_database,
+    load_discovery_history,
+    load_expert_suggestions,
     load_observatory_table,
+    load_repositories_requiring_attention,
     load_repository_registry,
     load_repository_runs,
     set_repository_status,
-    upsert_repository,
 )
 from src.observatory_discovery import (
-    discover_gerontocracy_repositories,
+    build_final_search_context,
 )
-from src.observatory_refresh import (
-    check_repository_source,
+from src.observatory_workflow import (
+    analyse_and_store_gerontocracy,
+    run_fresh_repository_discovery,
+    validate_and_store_expert_knowledge,
 )
 
 
@@ -1674,40 +1674,110 @@ app_ui = ui.page_fluid(
             ),
 
             ui.p(
-                "Discover, register, refresh and analyse "
-                "data sources related to gerontocracy."
+                "Understand the phenomenon, add expert knowledge, "
+                "discover authoritative repositories and review only "
+                "new or changed sources."
             ),
 
             ui.div(
-                ui.strong("Stage 1 — Repository Discovery"),
+                ui.strong("1. Understand Gerontocracy"),
                 ui.br(),
                 (
-                    "Describe the data object you need. The current "
-                    "discovery engine reviews a verified catalogue of "
-                    "official repositories and saves relevant sources "
-                    "to the persistent PostgreSQL registry."
+                    "The LLM first analyses what gerontocracy means "
+                    "and identifies measurable demographic, political, "
+                    "economic and social factors."
                 ),
                 class_="alert alert-primary mt-3",
             ),
 
-            ui.input_text_area(
-                "discovery_prompt",
-                "What data do you want to find?",
-                value=(
-                    "Find authoritative data repositories for analysing "
-                    "gerontocracy in Greece compared with the European "
-                    "Union. Include demographic ageing, political power "
-                    "and representation, wealth and assets, housing, "
-                    "labour-market position, social protection and "
-                    "intergenerational opportunity."
+            ui.input_action_button(
+                "analyse_gerontocracy",
+                "Analyse Gerontocracy",
+                class_="btn-primary",
+            ),
+
+            ui.div(
+                ui.output_text(
+                    "concept_status"
                 ),
-                rows=6,
+                class_="mt-2",
+            ),
+
+            ui.output_ui(
+                "concept_analysis_ui"
+            ),
+
+            ui.div(
+                ui.strong("2. Add Expert Knowledge"),
+                ui.br(),
+                (
+                    "Add a factor that the initial analysis may have "
+                    "missed."
+                ),
+                class_="alert alert-light border mt-4",
+            ),
+
+            ui.input_text_area(
+                "expert_knowledge",
+                "Anything else the Observatory should consider?",
+                placeholder=(
+                    "Example: Average age of company board members"
+                ),
+                rows=2,
                 width="100%",
+            ),
+
+            ui.div(
+                ui.strong("3. Validate"),
+                ui.br(),
+                (
+                    "A guardrail checks whether the expert suggestion is "
+                    "actually relevant to gerontocracy and rejects "
+                    "irrelevant, malicious or instruction-like input."
+                ),
+                class_="alert alert-light border mt-4",
+            ),
+
+            ui.input_action_button(
+                "validate_expert_knowledge",
+                "Validate and Add",
+                class_="btn-outline-primary",
+            ),
+
+            ui.div(
+                ui.output_text(
+                    "guardrail_status"
+                ),
+                class_="mt-2",
+            ),
+
+            ui.output_ui(
+                "accepted_knowledge_ui"
+            ),
+
+            ui.h5(
+                "Final Search Definition",
+                class_="mt-3",
+            ),
+
+            ui.output_ui(
+                "final_search_definition_ui"
+            ),
+
+            ui.div(
+                ui.strong("4. Discover Repositories"),
+                ui.br(),
+                (
+                    "Every run performs a fresh web search from scratch, "
+                    "then compares the results with the persistent "
+                    "Repository Registry."
+                ),
+                class_="alert alert-info mt-4",
             ),
 
             ui.input_action_button(
                 "discover_sources",
-                "Discover Candidate Repositories",
+                "Run Fresh Discovery",
                 class_="btn-primary",
             ),
 
@@ -1715,65 +1785,106 @@ app_ui = ui.page_fluid(
                 ui.output_text(
                     "discovery_status"
                 ),
-                class_="mt-3",
-            ),
-
-            ui.h4(
-                "Repository Registry",
-                class_="mt-4",
+                class_="mt-2",
             ),
 
             ui.p(
-                "Repositories keep a permanent ID. Re-discovered links "
-                "are updated rather than duplicated; new links are appended."
+                "The application periodically searches for new and "
+                "updated data repositories. Manual discovery is also "
+                "available here.",
+                class_="text-muted small mt-2",
             ),
 
-            ui.output_ui(
-                "repository_registry"
+            ui.tags.details(
+                ui.tags.summary(
+                    "Discovered Repositories"
+                ),
+                ui.div(
+                    ui.input_select(
+                        "repository_browser",
+                        "Repository",
+                        choices={
+                            "": "Select a repository..."
+                        },
+                        width="100%",
+                    ),
+                    ui.output_ui(
+                        "repository_detail_ui"
+                    ),
+                    class_="mt-3",
+                ),
+                class_="mt-4",
             ),
 
             ui.div(
-                ui.strong("Stage 2 — Review & Refresh"),
+                ui.strong("5. Review Changes"),
                 ui.br(),
                 (
-                    "Approve trusted repositories before they enter "
-                    "the data pipeline. A refresh check creates an "
-                    "audited repository run and confirms availability. "
-                    "Reliable data-change detection is performed on "
-                    "actual data objects in Stage 3."
+                    "Previously approved repositories that are unchanged "
+                    "stay approved. Only new or updated repositories "
+                    "require human attention."
                 ),
                 class_="alert alert-warning mt-4",
             ),
 
+            ui.output_ui(
+                "attention_summary_ui"
+            ),
+
+            ui.tags.details(
+                ui.tags.summary(
+                    "View updated repositories"
+                ),
+                ui.output_ui(
+                    "updated_repositories_ui"
+                ),
+                class_="mt-3",
+            ),
+
+            ui.tags.details(
+                ui.tags.summary(
+                    "View new repositories"
+                ),
+                ui.output_ui(
+                    "new_repositories_ui"
+                ),
+                class_="mt-2",
+            ),
+
             ui.input_select(
                 "repository_to_review",
-                "Select repository",
+                "Repository requiring attention",
                 choices={
                     "": "Select a repository..."
                 },
                 width="100%",
             ),
 
+            ui.output_ui(
+                "review_repository_detail_ui"
+            ),
+
+            ui.div(
+                ui.strong("6. Approve"),
+                ui.br(),
+                (
+                    "The human decides whether a new or updated "
+                    "repository is trusted. Unchanged approved sources "
+                    "do not need to be approved again."
+                ),
+                class_="alert alert-success mt-4",
+            ),
+
             ui.div(
                 ui.input_action_button(
                     "approve_selected_repository",
-                    "Approve Selected",
+                    "Approve",
                     class_="btn-success me-2",
                 ),
                 ui.input_action_button(
                     "reject_selected_repository",
-                    "Reject Selected",
-                    class_="btn-outline-danger me-2",
-                ),
-                ui.input_action_button(
-                    "approve_all_repositories",
-                    "Approve All Candidates",
-                    class_="btn-outline-success me-2",
-                ),
-                ui.input_action_button(
-                    "refresh_selected_repository",
-                    "Check / Refresh Selected",
-                    class_="btn-primary",
+                    "Reject",
+                    class_="btn-outline-danger",
                 ),
                 class_="mt-2",
             ),
@@ -1782,57 +1893,45 @@ app_ui = ui.page_fluid(
                 ui.output_text(
                     "repository_review_status"
                 ),
+                class_="mt-2",
+            ),
+
+            ui.tags.details(
+                ui.tags.summary(
+                    "Discover History"
+                ),
+                ui.div(
+                    ui.output_table(
+                        "discovery_history_table"
+                    ),
+                    style="overflow-x: auto;",
+                    class_="mt-3",
+                ),
+                class_="mt-4",
+            ),
+
+            ui.tags.details(
+                ui.tags.summary(
+                    "System details"
+                ),
+                ui.h5(
+                    "Current Observatory Topic",
+                    class_="mt-3",
+                ),
+                ui.output_table(
+                    "observatory_topics_table"
+                ),
+                ui.h5(
+                    "Recent Repository Checks",
+                    class_="mt-3",
+                ),
+                ui.div(
+                    ui.output_table(
+                        "repository_run_history"
+                    ),
+                    style="overflow-x: auto;",
+                ),
                 class_="mt-3",
-            ),
-
-            ui.h4(
-                "Repository Refresh History",
-                class_="mt-4",
-            ),
-
-            ui.p(
-                "At this stage, refresh confirms repository availability. "
-                "HTML landing pages are not treated as reliable data "
-                "change signals. Dataset extraction, snapshots and "
-                "change detection are added in Stage 3."
-            ),
-
-            ui.div(
-                ui.output_table(
-                    "repository_run_history"
-                ),
-                style="overflow-x: auto;",
-            ),
-
-            ui.h4(
-                "Discovery Execution History",
-                class_="mt-4",
-            ),
-
-            ui.div(
-                ui.output_table(
-                    "discovery_history_table"
-                ),
-                style="overflow-x: auto;",
-            ),
-
-            ui.h4(
-                "Current Observatory Topics",
-                class_="mt-4",
-            ),
-
-            ui.output_table(
-                "observatory_topics_table"
-            ),
-
-            ui.div(
-                ui.strong("Architecture note: "),
-                (
-                    "this stage creates the auditable repository registry. "
-                    "Live web/AI discovery, refresh pipelines, OSEMN and "
-                    "agent conclusions will be layered on top of it."
-                ),
-                class_="alert alert-light border mt-3",
             ),
         ),
 
@@ -2023,159 +2122,305 @@ def server(
     session,
 ):
 
-    discovery_refresh = reactive.Value(0)
+    observatory_refresh = reactive.Value(0)
+
+    concept_message = reactive.Value(
+        "Use the analysis step to initialise the research definition."
+    )
+
+    guardrail_message = reactive.Value(
+        "Validated expert knowledge will appear below."
+    )
+
     discovery_message = reactive.Value(
-        "Ready to discover repository candidates."
+        "Ready for a fresh repository discovery."
     )
+
     review_message = reactive.Value(
-        "Select a repository to review or refresh."
+        "Only new or updated repositories require review."
     )
+
+    def current_topic_id():
+        topics = load_observatory_table(
+            "observatory_topics"
+        )
+
+        if not topics:
+            raise RuntimeError(
+                "No Observatory topic is registered."
+            )
+
+        return int(
+            topics[0]["topic_id"]
+        )
+
+    def repository_badge_class(status):
+        if status == "APPROVED":
+            return "badge text-bg-success"
+        if status == "REJECTED":
+            return "badge text-bg-danger"
+        return "badge text-bg-secondary"
+
+    def change_badge_class(state):
+        if state == "NEW":
+            return "badge text-bg-primary"
+        if state == "UPDATED":
+            return "badge text-bg-warning"
+        return "badge text-bg-light border text-dark"
+
+    def repository_compact_detail(
+        repository,
+    ):
+        if not repository:
+            return ui.div()
+
+        repository_id = int(
+            repository["repository_id"]
+        )
+
+        score = repository.get(
+            "relevance_score"
+        )
+
+        score_text = (
+            "Not scored"
+            if score is None
+            else f"{float(score):.0f}/100"
+        )
+
+        return ui.div(
+            ui.div(
+                ui.strong(
+                    f"SRC-{repository_id:04d} — "
+                    f"{repository.get('repository_name', '')}"
+                ),
+                ui.span(
+                    repository.get(
+                        "status",
+                        "CANDIDATE",
+                    ),
+                    class_=(
+                        repository_badge_class(
+                            repository.get(
+                                "status"
+                            )
+                        )
+                        + " ms-2"
+                    ),
+                ),
+                ui.span(
+                    repository.get(
+                        "change_state",
+                        "UNCHANGED",
+                    ),
+                    class_=(
+                        change_badge_class(
+                            repository.get(
+                                "change_state"
+                            )
+                        )
+                        + " ms-2"
+                    ),
+                ),
+            ),
+            ui.p(
+                repository.get(
+                    "description"
+                )
+                or "",
+                class_="mt-2 mb-2",
+            ),
+            ui.p(
+                ui.strong("Provider: "),
+                repository.get(
+                    "provider"
+                )
+                or "",
+                ui.br(),
+                ui.strong("Dimension: "),
+                repository.get(
+                    "dimension"
+                )
+                or "",
+                ui.br(),
+                ui.strong("Geography: "),
+                repository.get(
+                    "geography"
+                )
+                or "",
+                ui.br(),
+                ui.strong("Format: "),
+                repository.get(
+                    "data_format"
+                )
+                or "",
+                ui.br(),
+                ui.strong("Relevance: "),
+                score_text,
+                ui.br(),
+                ui.strong("Availability: "),
+                repository.get(
+                    "availability_status"
+                )
+                or "Not checked",
+                class_="small",
+            ),
+            ui.a(
+                "Open",
+                href=repository.get(
+                    "url"
+                )
+                or "#",
+                target="_blank",
+                class_=(
+                    "btn btn-outline-primary "
+                    "btn-sm"
+                ),
+            ),
+            class_=(
+                "card card-body mt-3"
+            ),
+        )
+
+    @reactive.effect
+    @reactive.event(input.analyse_gerontocracy)
+    def analyse_gerontocracy():
+        concept_message.set(
+            "Analysing gerontocracy..."
+        )
+
+        try:
+            analysis = (
+                analyse_and_store_gerontocracy(
+                    current_topic_id()
+                )
+            )
+
+            concept_message.set(
+                "Gerontocracy analysis completed and saved."
+            )
+
+            observatory_refresh.set(
+                observatory_refresh.get() + 1
+            )
+
+        except Exception as exc:
+            concept_message.set(
+                "Analysis failed: "
+                + str(exc)
+            )
+
+    @reactive.effect
+    @reactive.event(input.validate_expert_knowledge)
+    def validate_expert_knowledge():
+        suggestion = (
+            input.expert_knowledge()
+            or ""
+        ).strip()
+
+        if not suggestion:
+            guardrail_message.set(
+                "Add one research factor first."
+            )
+            return
+
+        guardrail_message.set(
+            "Validating expert knowledge..."
+        )
+
+        try:
+            saved = (
+                validate_and_store_expert_knowledge(
+                    topic_id=current_topic_id(),
+                    suggestion=suggestion,
+                )
+            )
+
+            if saved["status"] == "ACCEPTED":
+                guardrail_message.set(
+                    "Accepted: "
+                    + (
+                        saved.get(
+                            "normalized_factor"
+                        )
+                        or suggestion
+                    )
+                )
+            else:
+                guardrail_message.set(
+                    "Rejected: "
+                    + (
+                        saved.get("reason")
+                        or "Not relevant."
+                    )
+                )
+
+            observatory_refresh.set(
+                observatory_refresh.get() + 1
+            )
+
+        except Exception as exc:
+            guardrail_message.set(
+                "Validation failed: "
+                + str(exc)
+            )
 
     @reactive.effect
     @reactive.event(input.discover_sources)
     def run_repository_discovery():
-        prompt = (
-            input.discovery_prompt()
-            or ""
-        ).strip()
-
-        if not prompt:
-            discovery_message.set(
-                "Please enter a discovery prompt first."
-            )
-            return
-
-        request_id = None
+        discovery_message.set(
+            "Running a fresh semantic web search..."
+        )
 
         try:
-            topics = load_observatory_table(
-                "observatory_topics"
-            )
-
-            if not topics:
-                raise RuntimeError(
-                    "No Observatory topic is registered."
+            result = (
+                run_fresh_repository_discovery(
+                    topic_id=current_topic_id(),
+                    run_type="MANUAL",
                 )
-
-            topic_id = int(
-                topics[0]["topic_id"]
-            )
-
-            request = create_discovery_request(
-                topic_id=topic_id,
-                prompt=prompt,
-            )
-
-            request_id = request[
-                "request_id"
-            ]
-
-            candidates = (
-                discover_gerontocracy_repositories(
-                    prompt
-                )
-            )
-
-            saved_ids = []
-
-            for candidate in candidates:
-                repository = upsert_repository(
-                    topic_id=topic_id,
-                    provider=candidate[
-                        "provider"
-                    ],
-                    repository_name=candidate[
-                        "repository_name"
-                    ],
-                    url=candidate[
-                        "url"
-                    ],
-                    description=candidate.get(
-                        "description"
-                    ),
-                    dimension=candidate.get(
-                        "dimension"
-                    ),
-                    geography=candidate.get(
-                        "geography"
-                    ),
-                    data_format=candidate.get(
-                        "data_format"
-                    ),
-                    refresh_frequency=(
-                        candidate.get(
-                            "refresh_frequency"
-                        )
-                    ),
-                    status="CANDIDATE",
-                    relevance_score=(
-                        candidate.get(
-                            "relevance_score"
-                        )
-                    ),
-                )
-
-                saved_ids.append(
-                    repository[
-                        "repository_id"
-                    ]
-                )
-
-            complete_discovery_request(
-                request_id=request_id,
-                candidates_found=len(
-                    candidates
-                ),
-                status="SUCCESS",
-                notes=(
-                    "Repository IDs: "
-                    + ", ".join(
-                        str(item)
-                        for item in saved_ids
-                    )
-                ),
             )
 
             discovery_message.set(
-                f"Discovery completed. "
-                f"{len(candidates)} candidate "
-                "repositories were reviewed and "
-                "saved/updated in PostgreSQL."
+                "Fresh discovery completed: "
+                f"{result['candidates_found']} found — "
+                f"{result['new_count']} new, "
+                f"{result['updated_count']} updated, "
+                f"{result['unchanged_count']} unchanged."
             )
 
-            discovery_refresh.set(
-                discovery_refresh.get() + 1
+            observatory_refresh.set(
+                observatory_refresh.get() + 1
             )
 
         except Exception as exc:
-            if request_id is not None:
-                try:
-                    complete_discovery_request(
-                        request_id=request_id,
-                        candidates_found=0,
-                        status="FAILED",
-                        notes=str(exc),
-                    )
-                except Exception:
-                    pass
-
             discovery_message.set(
                 "Discovery failed: "
                 + str(exc)
             )
 
     @reactive.effect
-    def update_repository_selector():
-        discovery_refresh.get()
+    def update_repository_selectors():
+        observatory_refresh.get()
 
         try:
-            repositories = load_repository_registry(
-                topic_id=1
+            topic_id = current_topic_id()
+
+            repositories = (
+                load_repository_registry(
+                    topic_id=topic_id
+                )
             )
+
+            attention = (
+                load_repositories_requiring_attention(
+                    topic_id=topic_id
+                )
+            )
+
         except Exception:
             return
 
-        choices = {
+        browser_choices = {
             "": "Select a repository..."
         }
 
@@ -2183,29 +2428,58 @@ def server(
             repository_id = int(
                 repository["repository_id"]
             )
-            choices[str(repository_id)] = (
+
+            browser_choices[
+                str(repository_id)
+            ] = (
                 f"SRC-{repository_id:04d} — "
                 f"{repository.get('provider', '')} — "
-                f"{repository.get('repository_name', '')} "
-                f"[{repository.get('status', 'CANDIDATE')}]"
+                f"{repository.get('repository_name', '')}"
+            )
+
+        ui.update_select(
+            "repository_browser",
+            choices=browser_choices,
+            session=session,
+        )
+
+        review_choices = {
+            "": "Select a repository..."
+        }
+
+        for repository in attention:
+            repository_id = int(
+                repository["repository_id"]
+            )
+
+            review_choices[
+                str(repository_id)
+            ] = (
+                f"{repository.get('change_state', 'NEW')} — "
+                f"SRC-{repository_id:04d} — "
+                f"{repository.get('repository_name', '')}"
             )
 
         ui.update_select(
             "repository_to_review",
-            choices=choices,
+            choices=review_choices,
             session=session,
         )
 
-    def selected_repository_id():
+    def selected_review_repository_id():
         value = input.repository_to_review()
+
         if not value:
             return None
+
         return int(value)
 
     @reactive.effect
     @reactive.event(input.approve_selected_repository)
     def approve_selected_repository():
-        repository_id = selected_repository_id()
+        repository_id = (
+            selected_review_repository_id()
+        )
 
         if repository_id is None:
             review_message.set(
@@ -2222,14 +2496,17 @@ def server(
             f"SRC-{repository_id:04d} approved: "
             f"{repository['repository_name']}."
         )
-        discovery_refresh.set(
-            discovery_refresh.get() + 1
+
+        observatory_refresh.set(
+            observatory_refresh.get() + 1
         )
 
     @reactive.effect
     @reactive.event(input.reject_selected_repository)
     def reject_selected_repository():
-        repository_id = selected_repository_id()
+        repository_id = (
+            selected_review_repository_id()
+        )
 
         if repository_id is None:
             review_message.set(
@@ -2246,133 +2523,380 @@ def server(
             f"SRC-{repository_id:04d} rejected: "
             f"{repository['repository_name']}."
         )
-        discovery_refresh.set(
-            discovery_refresh.get() + 1
+
+        observatory_refresh.set(
+            observatory_refresh.get() + 1
         )
 
-    @reactive.effect
-    @reactive.event(input.approve_all_repositories)
-    def approve_all_repositories():
-        count = approve_all_candidate_repositories(
-            topic_id=1
-        )
-        review_message.set(
-            f"Approved {count} candidate repositories."
-        )
-        discovery_refresh.set(
-            discovery_refresh.get() + 1
+    @output
+    @render.text
+    def concept_status():
+        return concept_message.get()
+
+    @output
+    @render.ui
+    def concept_analysis_ui():
+        observatory_refresh.get()
+
+        try:
+            analysis = (
+                get_latest_concept_analysis(
+                    current_topic_id()
+                )
+            )
+        except Exception:
+            analysis = None
+
+        if not analysis:
+            return ui.div(
+                "No LLM concept analysis has been saved yet.",
+                class_=(
+                    "alert alert-secondary mt-3"
+                ),
+            )
+
+        factors = analysis.get(
+            "factors_json"
+        ) or []
+
+        factor_items = []
+
+        for factor in factors:
+            factor_items.append(
+                ui.tags.li(
+                    ui.strong(
+                        factor.get(
+                            "name",
+                            "",
+                        )
+                    ),
+                    " — ",
+                    factor.get(
+                        "why_it_matters",
+                        "",
+                    ),
+                )
+            )
+
+        return ui.div(
+            ui.p(
+                analysis.get(
+                    "definition"
+                )
+                or ""
+            ),
+            ui.strong(
+                "Relevant factors / data dimensions"
+            ),
+            ui.tags.ul(
+                *factor_items
+            ),
+            class_=(
+                "card card-body mt-3"
+            ),
         )
 
-    @reactive.effect
-    @reactive.event(input.refresh_selected_repository)
-    def refresh_selected_repository():
-        repository_id = selected_repository_id()
+    @output
+    @render.text
+    def guardrail_status():
+        return guardrail_message.get()
+
+    @output
+    @render.ui
+    def accepted_knowledge_ui():
+        observatory_refresh.get()
+
+        try:
+            suggestions = (
+                load_expert_suggestions(
+                    current_topic_id(),
+                    accepted_only=True,
+                )
+            )
+        except Exception:
+            suggestions = []
+
+        if not suggestions:
+            return ui.p(
+                "No additional expert factors have been accepted yet.",
+                class_="text-muted mt-2",
+            )
+
+        return ui.div(
+            ui.strong(
+                "Validated human knowledge"
+            ),
+            ui.tags.ul(
+                *[
+                    ui.tags.li(
+                        item.get(
+                            "normalized_factor"
+                        )
+                        or item.get(
+                            "suggestion_text"
+                        )
+                        or ""
+                    )
+                    for item in suggestions
+                ]
+            ),
+            class_=(
+                "card card-body mt-3"
+            ),
+        )
+
+    @output
+    @render.ui
+    def final_search_definition_ui():
+        observatory_refresh.get()
+
+        try:
+            topic_id = current_topic_id()
+
+            analysis = (
+                get_latest_concept_analysis(
+                    topic_id
+                )
+            )
+
+            if not analysis:
+                return ui.p(
+                    "Analyse gerontocracy first.",
+                    class_="text-muted",
+                )
+
+            suggestions = (
+                load_expert_suggestions(
+                    topic_id=topic_id,
+                    accepted_only=True,
+                )
+            )
+
+            concept = {
+                "definition": analysis[
+                    "definition"
+                ],
+                "factors": analysis[
+                    "factors_json"
+                ],
+                "data_dimensions": analysis[
+                    "data_dimensions_json"
+                ],
+            }
+
+            context = (
+                build_final_search_context(
+                    concept,
+                    suggestions,
+                )
+            )
+
+            # Show a human-friendly summary rather than the raw technical prompt.
+            factor_names = [
+                item.get(
+                    "name",
+                    ""
+                )
+                for item in analysis[
+                    "factors_json"
+                ]
+            ]
+
+            human_names = [
+                item.get(
+                    "normalized_factor"
+                )
+                or item.get(
+                    "suggestion_text"
+                )
+                or ""
+                for item in suggestions
+            ]
+
+            return ui.div(
+                ui.p(
+                    analysis[
+                        "definition"
+                    ]
+                ),
+                ui.p(
+                    ui.strong(
+                        "LLM factors: "
+                    ),
+                    ", ".join(
+                        factor_names
+                    ),
+                ),
+                ui.p(
+                    ui.strong(
+                        "Validated expert additions: "
+                    ),
+                    (
+                        ", ".join(
+                            human_names
+                        )
+                        if human_names
+                        else "None"
+                    ),
+                    class_="mb-0",
+                ),
+                class_=(
+                    "card card-body"
+                ),
+            )
+
+        except Exception as exc:
+            return ui.div(
+                "Search definition unavailable: "
+                + str(exc),
+                class_=(
+                    "alert alert-warning"
+                ),
+            )
+
+    @output
+    @render.text
+    def discovery_status():
+        return discovery_message.get()
+
+    @output
+    @render.ui
+    def repository_detail_ui():
+        observatory_refresh.get()
+
+        value = input.repository_browser()
+
+        if not value:
+            return ui.p(
+                "Select a repository to view its details.",
+                class_="text-muted",
+            )
+
+        try:
+            repository = get_repository(
+                int(value)
+            )
+        except Exception:
+            repository = None
+
+        return repository_compact_detail(
+            repository
+        )
+
+    @output
+    @render.ui
+    def attention_summary_ui():
+        observatory_refresh.get()
+
+        try:
+            topic_id = current_topic_id()
+
+            updated = (
+                load_repositories_requiring_attention(
+                    topic_id,
+                    "UPDATED",
+                )
+            )
+
+            new = (
+                load_repositories_requiring_attention(
+                    topic_id,
+                    "NEW",
+                )
+            )
+
+        except Exception:
+            updated = []
+            new = []
+
+        if not updated and not new:
+            return ui.div(
+                "No repositories currently require attention.",
+                class_=(
+                    "alert alert-success"
+                ),
+            )
+
+        return ui.div(
+            ui.span(
+                f"{len(updated)} Updated",
+                class_=(
+                    "badge text-bg-warning me-2"
+                ),
+            ),
+            ui.span(
+                f"{len(new)} New",
+                class_=(
+                    "badge text-bg-primary"
+                ),
+            ),
+            class_="mb-2",
+        )
+
+    def attention_list_ui(change_state):
+        try:
+            repositories = (
+                load_repositories_requiring_attention(
+                    current_topic_id(),
+                    change_state,
+                )
+            )
+        except Exception:
+            repositories = []
+
+        if not repositories:
+            return ui.p(
+                "None.",
+                class_="text-muted mt-2",
+            )
+
+        return ui.tags.ul(
+            *[
+                ui.tags.li(
+                    f"SRC-{int(item['repository_id']):04d} — "
+                    f"{item.get('provider', '')} — "
+                    f"{item.get('repository_name', '')}"
+                )
+                for item in repositories
+            ],
+            class_="mt-2",
+        )
+
+    @output
+    @render.ui
+    def updated_repositories_ui():
+        observatory_refresh.get()
+        return attention_list_ui(
+            "UPDATED"
+        )
+
+    @output
+    @render.ui
+    def new_repositories_ui():
+        observatory_refresh.get()
+        return attention_list_ui(
+            "NEW"
+        )
+
+    @output
+    @render.ui
+    def review_repository_detail_ui():
+        observatory_refresh.get()
+
+        repository_id = (
+            selected_review_repository_id()
+        )
 
         if repository_id is None:
-            review_message.set(
-                "Select a repository first."
+            return ui.p(
+                "Select a repository to review.",
+                class_="text-muted",
             )
-            return
 
-        repository = get_repository(
-            repository_id
-        )
-
-        if repository is None:
-            review_message.set(
-                "Repository not found."
-            )
-            return
-
-        if repository.get("status") != "APPROVED":
-            review_message.set(
-                "Approve this repository before refreshing it."
-            )
-            return
-
-        review_message.set(
-            f"Checking SRC-{repository_id:04d}..."
-        )
-
-        previous_hash = (
-            get_latest_successful_repository_hash(
+        return repository_compact_detail(
+            get_repository(
                 repository_id
             )
-        )
-
-        result = check_repository_source(
-            repository["url"]
-        )
-
-        changed = None
-        current_hash = result.get(
-            "content_hash"
-        )
-
-        if (
-            result["status"] == "SUCCESS"
-            and current_hash is not None
-            and previous_hash is not None
-        ):
-            changed = (
-                current_hash
-                != previous_hash
-            )
-
-        create_repository_run(
-            repository_id=repository_id,
-            status=result["status"],
-            changed=changed,
-            content_hash=result.get(
-                "content_hash"
-            ),
-            notes=result.get("notes"),
-            http_status=result.get(
-                "http_status"
-            ),
-            content_type=result.get(
-                "content_type"
-            ),
-            last_modified=result.get(
-                "last_modified"
-            ),
-            etag=result.get("etag"),
-        )
-
-        if result["status"] != "SUCCESS":
-            message = (
-                f"SRC-{repository_id:04d} check failed. "
-                f"{result.get('notes', '')}"
-            )
-        elif current_hash is None:
-            message = (
-                f"SRC-{repository_id:04d} is reachable. "
-                "This is a repository landing page, so this stage "
-                "does not claim that the underlying dataset changed. "
-                "Dataset change detection will be performed on "
-                "Stage 3 data-object snapshots."
-            )
-        elif previous_hash is None:
-            message = (
-                f"SRC-{repository_id:04d} is reachable. "
-                "Baseline fingerprint stored."
-            )
-        elif changed:
-            message = (
-                f"SRC-{repository_id:04d} is reachable and "
-                "the versionable resource appears to have changed "
-                "since the previous check."
-            )
-        else:
-            message = (
-                f"SRC-{repository_id:04d} is reachable. "
-                "No change detected in the versionable resource "
-                "since the previous check."
-            )
-
-        review_message.set(message)
-        discovery_refresh.set(
-            discovery_refresh.get() + 1
         )
 
     @output
@@ -2382,274 +2906,16 @@ def server(
 
     @output
     @render.table
-    def repository_run_history():
-        discovery_refresh.get()
-
-        try:
-            runs = load_repository_runs(
-                topic_id=1
-            )
-        except Exception:
-            return pd.DataFrame(
-                [{
-                    "Status": (
-                        "PostgreSQL Observatory "
-                        "not available locally"
-                    )
-                }]
-            )
-
-        if not runs:
-            return pd.DataFrame(
-                [{
-                    "Status": (
-                        "No repository refresh "
-                        "executions yet"
-                    )
-                }]
-            )
-
-        df = pd.DataFrame(runs)
-
-        columns = [
-            "run_id",
-            "execution_date",
-            "repository_id",
-            "provider",
-            "repository_name",
-            "status",
-            "changed",
-            "http_status",
-            "content_type",
-        ]
-
-        available_columns = [
-            column
-            for column in columns
-            if column in df.columns
-        ]
-
-        return (
-            df[available_columns]
-            .rename(
-                columns={
-                    "run_id": "Run ID",
-                    "execution_date": "Execution Date",
-                    "repository_id": "Repository ID",
-                    "provider": "Provider",
-                    "repository_name": "Repository",
-                    "status": "Status",
-                    "changed": "Changed",
-                    "http_status": "HTTP",
-                    "content_type": "Content Type",
-                }
-            )
-        )
-
-    @output
-    @render.text
-    def discovery_status():
-        return discovery_message.get()
-
-    @output
-    @render.ui
-    def repository_registry():
-        discovery_refresh.get()
-
-        try:
-            repositories = (
-                load_repository_registry(
-                    topic_id=1
-                )
-            )
-
-        except Exception:
-            return ui.div(
-                "PostgreSQL Observatory is not "
-                "available in this environment.",
-                class_="alert alert-warning",
-            )
-
-        if not repositories:
-            return ui.div(
-                "No repositories registered yet. "
-                "Run the discovery prompt above.",
-                class_="alert alert-secondary",
-            )
-
-        cards = []
-
-        for repository in repositories:
-            score = repository.get(
-                "relevance_score"
-            )
-
-            if score is None:
-                score_text = "Not scored"
-            else:
-                score_text = (
-                    f"{float(score):.0f}/100"
-                )
-
-            repository_id = int(
-                repository[
-                    "repository_id"
-                ]
-            )
-
-            cards.append(
-                ui.div(
-                    ui.div(
-                        ui.div(
-                            ui.strong(
-                                f"SRC-{repository_id:04d}"
-                            ),
-                            ui.span(
-                                repository.get(
-                                    "status",
-                                    "CANDIDATE",
-                                ),
-                                class_=(
-                                    "badge ms-2 "
-                                    + (
-                                        "text-bg-success"
-                                        if repository.get("status") == "APPROVED"
-                                        else "text-bg-danger"
-                                        if repository.get("status") == "REJECTED"
-                                        else "text-bg-secondary"
-                                    )
-                                ),
-                            ),
-                        ),
-                        ui.h5(
-                            repository[
-                                "repository_name"
-                            ],
-                            class_="mt-2 mb-1",
-                        ),
-                        ui.p(
-                            repository.get(
-                                "description"
-                            )
-                            or "",
-                            class_="mb-2",
-                        ),
-                        ui.p(
-                            ui.strong(
-                                "Provider: "
-                            ),
-                            repository.get(
-                                "provider"
-                            )
-                            or "",
-                            ui.br(),
-                            ui.strong(
-                                "Dimension: "
-                            ),
-                            repository.get(
-                                "dimension"
-                            )
-                            or "",
-                            ui.br(),
-                            ui.strong(
-                                "Geography: "
-                            ),
-                            repository.get(
-                                "geography"
-                            )
-                            or "",
-                            ui.br(),
-                            ui.strong(
-                                "Format: "
-                            ),
-                            repository.get(
-                                "data_format"
-                            )
-                            or "",
-                            ui.br(),
-                            ui.strong(
-                                "Refresh: "
-                            ),
-                            repository.get(
-                                "refresh_frequency"
-                            )
-                            or "",
-                            ui.br(),
-                            ui.strong(
-                                "Relevance: "
-                            ),
-                            score_text,
-                            ui.br(),
-                            ui.strong(
-                                "Added: "
-                            ),
-                            str(
-                                repository.get("date_added") or ""
-                            ),
-                            ui.br(),
-                            ui.strong(
-                                "Last checked: "
-                            ),
-                            str(
-                                repository.get("last_checked")
-                                or "Never"
-                            ),
-                            class_="small",
-                        ),
-                        ui.a(
-                            "Open repository",
-                            href=repository[
-                                "url"
-                            ],
-                            target="_blank",
-                            class_=(
-                                "btn btn-outline-primary "
-                                "btn-sm"
-                            ),
-                        ),
-                        class_="card-body",
-                    ),
-                    class_=(
-                        "card shadow-sm h-100"
-                    ),
-                )
-            )
-
-        return ui.div(
-            *(
-                ui.div(
-                    card,
-                    class_=(
-                        "col-xl-4 col-lg-6 "
-                        "col-md-6"
-                    ),
-                )
-                for card in cards
-            ),
-            class_="row g-3",
-        )
-
-    @output
-    @render.table
     def discovery_history_table():
-        discovery_refresh.get()
+        observatory_refresh.get()
 
         try:
-            runs = load_observatory_table(
-                "discovery_requests"
+            runs = load_discovery_history(
+                current_topic_id(),
+                limit=25,
             )
-
         except Exception:
-            return pd.DataFrame(
-                [
-                    {
-                        "Status": (
-                            "PostgreSQL Observatory "
-                            "not available locally"
-                        )
-                    }
-                ]
-            )
+            runs = []
 
         if not runs:
             return pd.DataFrame(
@@ -2667,26 +2933,89 @@ def server(
         columns = [
             "request_id",
             "execution_date",
-            "prompt",
+            "run_type",
             "status",
             "candidates_found",
+            "new_count",
+            "updated_count",
+            "unchanged_count",
+        ]
+
+        available = [
+            column
+            for column in columns
+            if column in df.columns
         ]
 
         return (
-            df[columns]
-            .sort_values(
-                "request_id",
-                ascending=False,
-            )
+            df[available]
             .rename(
                 columns={
-                    "request_id": "Execution ID",
-                    "execution_date": "Execution Date",
-                    "prompt": "Prompt",
+                    "request_id": "Run",
+                    "execution_date": "Date",
+                    "run_type": "Type",
                     "status": "Status",
-                    "candidates_found": (
-                        "Candidates Found"
-                    ),
+                    "candidates_found": "Found",
+                    "new_count": "New",
+                    "updated_count": "Updated",
+                    "unchanged_count": "Unchanged",
+                }
+            )
+        )
+
+    @output
+    @render.table
+    def repository_run_history():
+        observatory_refresh.get()
+
+        try:
+            runs = load_repository_runs(
+                topic_id=current_topic_id(),
+                limit=25,
+            )
+        except Exception:
+            runs = []
+
+        if not runs:
+            return pd.DataFrame(
+                [
+                    {
+                        "Status": (
+                            "No repository checks yet"
+                        )
+                    }
+                ]
+            )
+
+        df = pd.DataFrame(runs)
+
+        columns = [
+            "run_id",
+            "execution_date",
+            "provider",
+            "repository_name",
+            "status",
+            "http_status",
+            "content_type",
+        ]
+
+        available = [
+            column
+            for column in columns
+            if column in df.columns
+        ]
+
+        return (
+            df[available]
+            .rename(
+                columns={
+                    "run_id": "Run",
+                    "execution_date": "Date",
+                    "provider": "Provider",
+                    "repository_name": "Repository",
+                    "status": "Status",
+                    "http_status": "HTTP",
+                    "content_type": "Content Type",
                 }
             )
         )
@@ -2694,31 +3023,19 @@ def server(
     @output
     @render.table
     def observatory_topics_table():
-
         try:
             topics = load_observatory_table(
                 "observatory_topics"
             )
-
         except Exception:
-            return pd.DataFrame(
-                [
-                    {
-                        "Status": (
-                            "PostgreSQL Observatory "
-                            "not available locally"
-                        )
-                    }
-                ]
-            )
+            topics = []
 
         if not topics:
             return pd.DataFrame(
                 [
                     {
                         "Status": (
-                            "No Observatory topics "
-                            "registered yet"
+                            "No Observatory topic registered"
                         )
                     }
                 ]
@@ -2729,25 +3046,23 @@ def server(
         columns = [
             "topic_id",
             "name",
-            "description",
             "geography",
             "status",
             "created_at",
         ]
 
-        available_columns = [
+        available = [
             column
             for column in columns
             if column in df.columns
         ]
 
         return (
-            df[available_columns]
+            df[available]
             .rename(
                 columns={
                     "topic_id": "Topic ID",
                     "name": "Topic",
-                    "description": "Description",
                     "geography": "Geography",
                     "status": "Status",
                     "created_at": "Created",
