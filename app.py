@@ -19,16 +19,15 @@ from src.observatory_db import (
     get_repository,
     initialize_default_topic,
     initialize_observatory_database,
+    load_active_research_goals,
     load_discovery_history,
     load_expert_suggestions,
+    load_latest_goal_coverage,
     load_observatory_table,
     load_repositories_requiring_attention,
     load_repository_registry,
     load_repository_runs,
     set_repository_status,
-)
-from src.observatory_discovery import (
-    build_final_search_context,
 )
 from src.observatory_workflow import (
     analyse_and_store_gerontocracy,
@@ -1674,25 +1673,25 @@ app_ui = ui.page_fluid(
             ),
 
             ui.p(
-                "Understand the phenomenon, add expert knowledge, "
-                "discover authoritative repositories and review only "
-                "new or changed sources."
+                "The Observatory explains what gerontocracy means, "
+                "decides what data are needed to study it, searches for "
+                "those data, and shows what was or was not found."
             ),
 
             ui.div(
-                ui.strong("1. Understand Gerontocracy"),
+                ui.strong("1. What is gerontocracy?"),
                 ui.br(),
                 (
-                    "The LLM first analyses what gerontocracy means "
-                    "and identifies measurable demographic, political, "
-                    "economic and social factors."
+                    "The system gives a clear definition and turns the "
+                    "idea into specific questions that can be tested "
+                    "with data."
                 ),
                 class_="alert alert-primary mt-3",
             ),
 
             ui.input_action_button(
                 "analyse_gerontocracy",
-                "Analyse Gerontocracy",
+                "Understand Gerontocracy",
                 class_="btn-primary",
             ),
 
@@ -1708,18 +1707,18 @@ app_ui = ui.page_fluid(
             ),
 
             ui.div(
-                ui.strong("2. Add Expert Knowledge"),
+                ui.strong("2. Add something the system missed"),
                 ui.br(),
                 (
-                    "Add a factor that the initial analysis may have "
-                    "missed."
+                    "You can add another idea that you think is important "
+                    "for studying gerontocracy."
                 ),
                 class_="alert alert-light border mt-4",
             ),
 
             ui.input_text_area(
                 "expert_knowledge",
-                "Anything else the Observatory should consider?",
+                "What else should the Observatory study?",
                 placeholder=(
                     "Example: Average age of company board members"
                 ),
@@ -1728,19 +1727,18 @@ app_ui = ui.page_fluid(
             ),
 
             ui.div(
-                ui.strong("3. Validate"),
+                ui.strong("3. Check your addition"),
                 ui.br(),
                 (
-                    "A guardrail checks whether the expert suggestion is "
-                    "actually relevant to gerontocracy and rejects "
-                    "irrelevant, malicious or instruction-like input."
+                    "The system checks whether your idea is really related "
+                    "to gerontocracy before adding it to the study."
                 ),
                 class_="alert alert-light border mt-4",
             ),
 
             ui.input_action_button(
                 "validate_expert_knowledge",
-                "Validate and Add",
+                "Check and Add",
                 class_="btn-outline-primary",
             ),
 
@@ -1756,28 +1754,28 @@ app_ui = ui.page_fluid(
             ),
 
             ui.h5(
-                "Final Search Definition",
-                class_="mt-3",
+                "What the Observatory will look for",
+                class_="mt-4",
             ),
 
             ui.output_ui(
-                "final_search_definition_ui"
+                "research_goals_ui"
             ),
 
             ui.div(
-                ui.strong("4. Discover Repositories"),
+                ui.strong("4. Find data for every research goal"),
                 ui.br(),
                 (
-                    "Every run performs a fresh web search from scratch, "
-                    "then compares the results with the persistent "
-                    "Repository Registry."
+                    "The system searches separately for each goal. "
+                    "If it cannot find an available dataset for a goal, "
+                    "it says so instead of pretending that the goal is covered."
                 ),
                 class_="alert alert-info mt-4",
             ),
 
             ui.input_action_button(
                 "discover_sources",
-                "Run Fresh Discovery",
+                "Find Datasets",
                 class_="btn-primary",
             ),
 
@@ -1788,11 +1786,13 @@ app_ui = ui.page_fluid(
                 class_="mt-2",
             ),
 
-            ui.p(
-                "The application periodically searches for new and "
-                "updated data repositories. Manual discovery is also "
-                "available here.",
-                class_="text-muted small mt-2",
+            ui.h5(
+                "Data Coverage",
+                class_="mt-4",
+            ),
+
+            ui.output_ui(
+                "goal_coverage_ui"
             ),
 
             ui.tags.details(
@@ -1817,12 +1817,11 @@ app_ui = ui.page_fluid(
             ),
 
             ui.div(
-                ui.strong("5. Review Changes"),
+                ui.strong("5. Review new or changed sources"),
                 ui.br(),
                 (
-                    "Previously approved repositories that are unchanged "
-                    "stay approved. Only new or updated repositories "
-                    "require human attention."
+                    "Sources that are already approved and unchanged stay "
+                    "approved. Only new or changed sources need attention."
                 ),
                 class_="alert alert-warning mt-4",
             ),
@@ -1833,7 +1832,7 @@ app_ui = ui.page_fluid(
 
             ui.tags.details(
                 ui.tags.summary(
-                    "View updated repositories"
+                    "View changed repositories"
                 ),
                 ui.output_ui(
                     "updated_repositories_ui"
@@ -1868,9 +1867,8 @@ app_ui = ui.page_fluid(
                 ui.strong("6. Approve"),
                 ui.br(),
                 (
-                    "The human decides whether a new or updated "
-                    "repository is trusted. Unchanged approved sources "
-                    "do not need to be approved again."
+                    "You decide which new or changed repositories "
+                    "should be trusted."
                 ),
                 class_="alert alert-success mt-4",
             ),
@@ -2125,15 +2123,15 @@ def server(
     observatory_refresh = reactive.Value(0)
 
     concept_message = reactive.Value(
-        "Use the analysis step to initialise the research definition."
+        "Click “Understand Gerontocracy” to create the study goals."
     )
 
     guardrail_message = reactive.Value(
-        "Validated expert knowledge will appear below."
+        "Your accepted additions will appear below."
     )
 
     discovery_message = reactive.Value(
-        "Ready for a fresh repository discovery."
+        "Ready to search for datasets for every research goal."
     )
 
     review_message = reactive.Value(
@@ -2286,7 +2284,7 @@ def server(
     @reactive.event(input.analyse_gerontocracy)
     def analyse_gerontocracy():
         concept_message.set(
-            "Analysing gerontocracy..."
+            "Building a clear definition and research goals..."
         )
 
         try:
@@ -2297,7 +2295,7 @@ def server(
             )
 
             concept_message.set(
-                "Gerontocracy analysis completed and saved."
+                "Definition and research goals created and saved."
             )
 
             observatory_refresh.set(
@@ -2320,12 +2318,12 @@ def server(
 
         if not suggestion:
             guardrail_message.set(
-                "Add one research factor first."
+                "Add one idea first."
             )
             return
 
         guardrail_message.set(
-            "Validating expert knowledge..."
+            "Checking whether your idea is relevant..."
         )
 
         try:
@@ -2369,7 +2367,7 @@ def server(
     @reactive.event(input.discover_sources)
     def run_repository_discovery():
         discovery_message.set(
-            "Running a fresh semantic web search..."
+            "Searching the web for an available dataset for every goal..."
         )
 
         try:
@@ -2381,10 +2379,15 @@ def server(
             )
 
             discovery_message.set(
-                "Fresh discovery completed: "
-                f"{result['candidates_found']} found — "
-                f"{result['new_count']} new, "
-                f"{result['updated_count']} updated, "
+                "Search completed: "
+                f"{result['goals_found']} of "
+                f"{result['goals_total']} research goals have at least "
+                "one available dataset. "
+                f"{result['goals_not_found']} have no dataset found. "
+                f"{result['goals_unavailable']} have only unavailable "
+                "candidates. "
+                f"Repository comparison: {result['new_count']} new, "
+                f"{result['updated_count']} changed, "
                 f"{result['unchanged_count']} unchanged."
             )
 
@@ -2549,7 +2552,7 @@ def server(
 
         if not analysis:
             return ui.div(
-                "No LLM concept analysis has been saved yet.",
+                "No definition has been created yet.",
                 class_=(
                     "alert alert-secondary mt-3"
                 ),
@@ -2559,38 +2562,58 @@ def server(
             "factors_json"
         ) or []
 
-        factor_items = []
+        factor_cards = []
 
         for factor in factors:
-            factor_items.append(
-                ui.tags.li(
+            factor_cards.append(
+                ui.div(
                     ui.strong(
                         factor.get(
                             "name",
                             "",
                         )
                     ),
-                    " — ",
-                    factor.get(
-                        "why_it_matters",
-                        "",
+                    ui.p(
+                        factor.get(
+                            "simple_explanation"
+                        )
+                        or factor.get(
+                            "why_it_matters"
+                        )
+                        or "",
+                        class_="mb-1 mt-1",
+                    ),
+                    ui.p(
+                        ui.strong(
+                            "Data needed: "
+                        ),
+                        factor.get(
+                            "what_data_to_find"
+                        )
+                        or "",
+                        class_="small mb-0",
+                    ),
+                    class_=(
+                        "border rounded p-2 mb-2"
                     ),
                 )
             )
 
         return ui.div(
+            ui.h5(
+                "Simple definition"
+            ),
             ui.p(
                 analysis.get(
                     "definition"
                 )
                 or ""
             ),
-            ui.strong(
-                "Relevant factors / data dimensions"
+            ui.h5(
+                "Main things to study",
+                class_="mt-3",
             ),
-            ui.tags.ul(
-                *factor_items
-            ),
+            *factor_cards,
             class_=(
                 "card card-body mt-3"
             ),
@@ -2647,112 +2670,247 @@ def server(
 
     @output
     @render.ui
-    def final_search_definition_ui():
+    def research_goals_ui():
         observatory_refresh.get()
 
         try:
-            topic_id = current_topic_id()
+            goals = load_active_research_goals(
+                current_topic_id()
+            )
+        except Exception:
+            goals = []
 
-            analysis = (
-                get_latest_concept_analysis(
-                    topic_id
-                )
+        if not goals:
+            return ui.p(
+                "No research goals are available yet. "
+                "Start with “Understand Gerontocracy”.",
+                class_="text-muted",
             )
 
-            if not analysis:
-                return ui.p(
-                    "Analyse gerontocracy first.",
-                    class_="text-muted",
-                )
+        cards = []
 
-            suggestions = (
-                load_expert_suggestions(
-                    topic_id=topic_id,
-                    accepted_only=True,
-                )
+        for goal in goals:
+            source_label = (
+                "Added by you"
+                if goal.get(
+                    "source_type"
+                ) == "HUMAN"
+                else "Created by the system"
             )
 
-            concept = {
-                "definition": analysis[
-                    "definition"
-                ],
-                "factors": analysis[
-                    "factors_json"
-                ],
-                "data_dimensions": analysis[
-                    "data_dimensions_json"
-                ],
-            }
-
-            context = (
-                build_final_search_context(
-                    concept,
-                    suggestions,
-                )
-            )
-
-            # Show a human-friendly summary rather than the raw technical prompt.
-            factor_names = [
-                item.get(
-                    "name",
-                    ""
-                )
-                for item in analysis[
-                    "factors_json"
-                ]
-            ]
-
-            human_names = [
-                item.get(
-                    "normalized_factor"
-                )
-                or item.get(
-                    "suggestion_text"
-                )
-                or ""
-                for item in suggestions
-            ]
-
-            return ui.div(
-                ui.p(
-                    analysis[
-                        "definition"
-                    ]
-                ),
-                ui.p(
+            cards.append(
+                ui.div(
                     ui.strong(
-                        "LLM factors: "
-                    ),
-                    ", ".join(
-                        factor_names
-                    ),
-                ),
-                ui.p(
-                    ui.strong(
-                        "Validated expert additions: "
-                    ),
-                    (
-                        ", ".join(
-                            human_names
+                        goal.get(
+                            "goal_name",
+                            "",
                         )
-                        if human_names
-                        else "None"
                     ),
-                    class_="mb-0",
-                ),
+                    ui.span(
+                        source_label,
+                        class_=(
+                            "badge text-bg-light "
+                            "border text-dark ms-2"
+                        ),
+                    ),
+                    ui.p(
+                        goal.get(
+                            "simple_explanation"
+                        )
+                        or "",
+                        class_="mb-1 mt-1",
+                    ),
+                    ui.p(
+                        ui.strong(
+                            "The system will look for: "
+                        ),
+                        goal.get(
+                            "what_data_to_find"
+                        )
+                        or "",
+                        class_="small mb-0",
+                    ),
+                    class_=(
+                        "border rounded p-2 mb-2"
+                    ),
+                )
+            )
+
+        return ui.div(
+            *cards
+        )
+
+    @output
+    @render.ui
+    def goal_coverage_ui():
+        observatory_refresh.get()
+
+        try:
+            rows = load_latest_goal_coverage(
+                current_topic_id()
+            )
+        except Exception:
+            rows = []
+
+        if not rows:
+            return ui.div(
+                "No dataset search has been completed yet.",
                 class_=(
-                    "card card-body"
+                    "alert alert-secondary"
                 ),
             )
 
-        except Exception as exc:
-            return ui.div(
-                "Search definition unavailable: "
-                + str(exc),
-                class_=(
-                    "alert alert-warning"
-                ),
+        grouped = {}
+
+        for row in rows:
+            goal_id = int(
+                row["goal_id"]
             )
+
+            grouped.setdefault(
+                goal_id,
+                {
+                    "goal": row,
+                    "matches": [],
+                },
+            )
+
+            if row.get("status"):
+                grouped[
+                    goal_id
+                ]["matches"].append(
+                    row
+                )
+
+        cards = []
+
+        for item in grouped.values():
+            goal = item["goal"]
+            matches = item["matches"]
+
+            found = [
+                match
+                for match in matches
+                if match.get(
+                    "status"
+                ) == "FOUND"
+            ]
+
+            unavailable = [
+                match
+                for match in matches
+                if match.get(
+                    "status"
+                ) == "UNAVAILABLE"
+            ]
+
+            if found:
+                status_text = "DATASET FOUND"
+                status_class = (
+                    "badge text-bg-success"
+                )
+            elif unavailable:
+                status_text = (
+                    "FOUND, BUT NOT AVAILABLE"
+                )
+                status_class = (
+                    "badge text-bg-warning"
+                )
+            else:
+                status_text = (
+                    "NO AVAILABLE DATASET FOUND"
+                )
+                status_class = (
+                    "badge text-bg-danger"
+                )
+
+            dataset_items = []
+
+            for match in (
+                found
+                if found
+                else unavailable
+            ):
+                dataset_items.append(
+                    ui.tags.li(
+                        ui.a(
+                            (
+                                match.get(
+                                    "dataset_name"
+                                )
+                                or "Dataset"
+                            ),
+                            href=(
+                                match.get(
+                                    "dataset_url"
+                                )
+                                or "#"
+                            ),
+                            target="_blank",
+                        ),
+                        (
+                            " — "
+                            + (
+                                match.get(
+                                    "provider"
+                                )
+                                or ""
+                            )
+                        ),
+                    )
+                )
+
+            if not dataset_items:
+                explanation = ""
+
+                for match in matches:
+                    if match.get(
+                        "evidence_reason"
+                    ):
+                        explanation = match[
+                            "evidence_reason"
+                        ]
+                        break
+
+                body = ui.p(
+                    explanation
+                    or (
+                        "The search did not find an "
+                        "available dataset for this goal."
+                    ),
+                    class_="mb-0 mt-2",
+                )
+            else:
+                body = ui.tags.ul(
+                    *dataset_items,
+                    class_="mb-0 mt-2",
+                )
+
+            cards.append(
+                ui.div(
+                    ui.strong(
+                        goal.get(
+                            "goal_name",
+                            "",
+                        )
+                    ),
+                    ui.span(
+                        status_text,
+                        class_=(
+                            status_class
+                            + " ms-2"
+                        ),
+                    ),
+                    body,
+                    class_=(
+                        "border rounded p-2 mb-2"
+                    ),
+                )
+            )
+
+        return ui.div(
+            *cards
+        )
 
     @output
     @render.text

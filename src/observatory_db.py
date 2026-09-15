@@ -1,3 +1,4 @@
+import difflib
 import hashlib
 import json
 import os
@@ -85,9 +86,6 @@ def _repository_metadata_hash(item):
         ),
         "repository_name": _normalise_text(
             item.get("repository_name")
-        ),
-        "url": _canonicalize_url(
-            item.get("url")
         ),
         "dimension": _normalise_text(
             item.get("dimension")
@@ -300,6 +298,64 @@ def initialize_observatory_database():
                 """
             )
 
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS research_goals (
+                    goal_id BIGSERIAL PRIMARY KEY,
+                    topic_id BIGINT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_reference_id BIGINT,
+                    goal_name TEXT NOT NULL,
+                    simple_explanation TEXT,
+                    what_data_to_find TEXT NOT NULL,
+                    active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_goal_topic
+                        FOREIGN KEY (topic_id)
+                        REFERENCES observatory_topics(topic_id)
+                        ON DELETE CASCADE
+                );
+                """
+            )
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS goal_dataset_matches (
+                    match_id BIGSERIAL PRIMARY KEY,
+                    request_id BIGINT NOT NULL,
+                    goal_id BIGINT NOT NULL,
+                    repository_id BIGINT,
+                    status TEXT NOT NULL,
+                    dataset_name TEXT,
+                    dataset_url TEXT,
+                    provider TEXT,
+                    geography TEXT,
+                    data_format TEXT,
+                    evidence_reason TEXT,
+                    availability_status TEXT,
+                    http_status INTEGER,
+                    created_at TIMESTAMPTZ NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_match_request
+                        FOREIGN KEY (request_id)
+                        REFERENCES discovery_requests(request_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT fk_match_goal
+                        FOREIGN KEY (goal_id)
+                        REFERENCES research_goals(goal_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT fk_match_repository
+                        FOREIGN KEY (repository_id)
+                        REFERENCES repositories(repository_id)
+                        ON DELETE SET NULL
+                );
+                """
+            )
+
             # Existing-table migrations.
             repository_columns = [
                 (
@@ -482,6 +538,8 @@ def load_observatory_table(table_name):
         "concept_analyses",
         "expert_suggestions",
         "discovery_results",
+        "research_goals",
+        "goal_dataset_matches",
     }
 
     if table_name not in allowed_tables:
@@ -875,10 +933,152 @@ def get_repository(repository_id):
     return dict(row) if row else None
 
 
+def _repository_name_tokens(
+    name,
+    provider=None,
+):
+    text = _normalise_text(name)
+
+    provider_tokens = set(
+        _normalise_text(provider).split()
+    )
+
+    stop_words = {
+        "data",
+        "database",
+        "dataset",
+        "datasets",
+        "statistics",
+        "statistical",
+        "portal",
+        "repository",
+        "official",
+        "open",
+        "the",
+        "and",
+        "for",
+        "of",
+        "on",
+        "chapter",
+    }
+
+    tokens = []
+
+    for raw in text.split():
+        token = "".join(
+            character
+            for character in raw
+            if character.isalnum()
+        )
+
+        if not token:
+            continue
+
+        if token.endswith("s") and len(token) > 3:
+            token = token[:-1]
+
+        if (
+            token in stop_words
+            or token in provider_tokens
+        ):
+            continue
+
+        tokens.append(token)
+
+    return set(tokens)
+
+
+def _repository_similarity(
+    candidate,
+    existing,
+):
+    candidate_provider = _normalise_text(
+        candidate.get("provider")
+    )
+
+    existing_provider = _normalise_text(
+        existing.get("provider")
+    )
+
+    provider_same = (
+        candidate_provider
+        and candidate_provider
+        == existing_provider
+    )
+
+    candidate_tokens = _repository_name_tokens(
+        candidate.get("repository_name"),
+        candidate.get("provider"),
+    )
+
+    existing_tokens = _repository_name_tokens(
+        existing.get("repository_name"),
+        existing.get("provider"),
+    )
+
+    if candidate_tokens or existing_tokens:
+        union = candidate_tokens | existing_tokens
+        overlap = (
+            len(candidate_tokens & existing_tokens)
+            / len(union)
+            if union
+            else 0.0
+        )
+    else:
+        overlap = 0.0
+
+    name_ratio = difflib.SequenceMatcher(
+        None,
+        _normalise_text(
+            candidate.get("repository_name")
+        ),
+        _normalise_text(
+            existing.get("repository_name")
+        ),
+    ).ratio()
+
+    candidate_domain = urllib.parse.urlsplit(
+        _canonicalize_url(
+            candidate.get("url")
+        )
+    ).netloc
+
+    existing_domain = urllib.parse.urlsplit(
+        _canonicalize_url(
+            existing.get("canonical_url")
+            or existing.get("url")
+        )
+    ).netloc
+
+    domain_same = bool(
+        candidate_domain
+        and candidate_domain
+        == existing_domain
+    )
+
+    if provider_same and overlap >= 0.60:
+        return max(
+            0.85,
+            overlap,
+        )
+
+    if provider_same and name_ratio >= 0.82:
+        return name_ratio
+
+    if domain_same and overlap >= 0.75:
+        return max(
+            0.80,
+            overlap,
+        )
+
+    return 0.0
+
+
 def _find_existing_repository(
     cursor,
     topic_id,
     canonical_url,
+    candidate=None,
 ):
     cursor.execute(
         """
@@ -890,8 +1090,13 @@ def _find_existing_repository(
         (topic_id,),
     )
 
-    for row in cursor.fetchall():
-        row_dict = dict(row)
+    rows = [
+        dict(row)
+        for row in cursor.fetchall()
+    ]
+
+    # First: exact canonical URL match.
+    for row_dict in rows:
         stored = (
             row_dict.get("canonical_url")
             or row_dict.get("url")
@@ -902,6 +1107,25 @@ def _find_existing_repository(
             == canonical_url
         ):
             return row_dict
+
+    # Second: logical repository match. This helps avoid duplicates when
+    # a search engine returns a different page/URL for the same source.
+    if candidate:
+        best = None
+        best_score = 0.0
+
+        for row_dict in rows:
+            score = _repository_similarity(
+                candidate,
+                row_dict,
+            )
+
+            if score > best_score:
+                best = row_dict
+                best_score = score
+
+        if best is not None and best_score >= 0.80:
+            return best
 
     return None
 
@@ -959,6 +1183,7 @@ def compare_and_store_repository_candidate(
                 cursor,
                 topic_id,
                 canonical_url,
+                candidate=candidate,
             )
 
             if existing is None:
@@ -1042,11 +1267,8 @@ def compare_and_store_repository_candidate(
                 previous_status = None
 
             else:
-                old_hash = (
-                    existing.get("metadata_hash")
-                    or _repository_metadata_hash(
-                        existing
-                    )
+                old_hash = _repository_metadata_hash(
+                    existing
                 )
 
                 old_version_marker = (
@@ -1235,6 +1457,322 @@ def compare_and_store_repository_candidate(
         conn.commit()
 
     return repository, result_state
+
+
+
+def replace_llm_research_goals(
+    topic_id,
+    analysis_id,
+    factors,
+):
+    """
+    Keep old goals for history, but only the newest LLM-generated set active.
+    Human-added goals remain active.
+    """
+
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                UPDATE research_goals
+                SET active = FALSE,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE topic_id = %s
+                  AND source_type = 'LLM'
+                  AND active = TRUE;
+                """,
+                (topic_id,),
+            )
+
+            saved = []
+
+            for factor in factors or []:
+                cursor.execute(
+                    """
+                    INSERT INTO research_goals (
+                        topic_id,
+                        source_type,
+                        source_reference_id,
+                        goal_name,
+                        simple_explanation,
+                        what_data_to_find,
+                        active
+                    )
+                    VALUES (
+                        %s, 'LLM', %s, %s, %s, %s, TRUE
+                    )
+                    RETURNING *;
+                    """,
+                    (
+                        topic_id,
+                        analysis_id,
+                        factor.get("name"),
+                        factor.get(
+                            "simple_explanation"
+                        )
+                        or factor.get(
+                            "why_it_matters"
+                        ),
+                        factor.get(
+                            "what_data_to_find"
+                        )
+                        or factor.get(
+                            "why_it_matters"
+                        )
+                        or factor.get("name"),
+                    ),
+                )
+                saved.append(
+                    dict(cursor.fetchone())
+                )
+
+        conn.commit()
+
+    return saved
+
+
+def ensure_human_research_goal(
+    topic_id,
+    suggestion_id,
+    goal_name,
+    what_data_to_find,
+):
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                SELECT *
+                FROM research_goals
+                WHERE topic_id = %s
+                  AND source_type = 'HUMAN'
+                  AND source_reference_id = %s
+                LIMIT 1;
+                """,
+                (
+                    topic_id,
+                    suggestion_id,
+                ),
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                cursor.execute(
+                    """
+                    UPDATE research_goals
+                    SET goal_name = %s,
+                        what_data_to_find = %s,
+                        simple_explanation = %s,
+                        active = TRUE,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE goal_id = %s
+                    RETURNING *;
+                    """,
+                    (
+                        goal_name,
+                        what_data_to_find,
+                        (
+                            "Added by the user and accepted "
+                            "by the relevance guardrail."
+                        ),
+                        existing["goal_id"],
+                    ),
+                )
+                row = cursor.fetchone()
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO research_goals (
+                        topic_id,
+                        source_type,
+                        source_reference_id,
+                        goal_name,
+                        simple_explanation,
+                        what_data_to_find,
+                        active
+                    )
+                    VALUES (
+                        %s, 'HUMAN', %s, %s, %s, %s, TRUE
+                    )
+                    RETURNING *;
+                    """,
+                    (
+                        topic_id,
+                        suggestion_id,
+                        goal_name,
+                        (
+                            "Added by the user and accepted "
+                            "by the relevance guardrail."
+                        ),
+                        what_data_to_find,
+                    ),
+                )
+                row = cursor.fetchone()
+
+        conn.commit()
+
+    return dict(row)
+
+
+def load_active_research_goals(
+    topic_id,
+):
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                SELECT *
+                FROM research_goals
+                WHERE topic_id = %s
+                  AND active = TRUE
+                ORDER BY
+                    CASE source_type
+                        WHEN 'LLM' THEN 1
+                        ELSE 2
+                    END,
+                    goal_id;
+                """,
+                (topic_id,),
+            )
+
+            return [
+                dict(row)
+                for row in cursor.fetchall()
+            ]
+
+
+def save_goal_dataset_match(
+    request_id,
+    goal_id,
+    status,
+    repository_id=None,
+    dataset_name=None,
+    dataset_url=None,
+    provider=None,
+    geography=None,
+    data_format=None,
+    evidence_reason=None,
+    availability_status=None,
+    http_status=None,
+):
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO goal_dataset_matches (
+                    request_id,
+                    goal_id,
+                    repository_id,
+                    status,
+                    dataset_name,
+                    dataset_url,
+                    provider,
+                    geography,
+                    data_format,
+                    evidence_reason,
+                    availability_status,
+                    http_status
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s
+                )
+                RETURNING *;
+                """,
+                (
+                    request_id,
+                    goal_id,
+                    repository_id,
+                    status,
+                    dataset_name,
+                    dataset_url,
+                    provider,
+                    geography,
+                    data_format,
+                    evidence_reason,
+                    availability_status,
+                    http_status,
+                ),
+            )
+            row = cursor.fetchone()
+
+        conn.commit()
+
+    return dict(row)
+
+
+def load_latest_goal_coverage(
+    topic_id,
+):
+    with get_observatory_connection() as conn:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            cursor.execute(
+                """
+                SELECT request_id
+                FROM discovery_requests
+                WHERE topic_id = %s
+                  AND status = 'SUCCESS'
+                ORDER BY execution_date DESC, request_id DESC
+                LIMIT 1;
+                """,
+                (topic_id,),
+            )
+
+            request_row = cursor.fetchone()
+
+            if not request_row:
+                return []
+
+            request_id = request_row[
+                "request_id"
+            ]
+
+            cursor.execute(
+                """
+                SELECT
+                    g.goal_id,
+                    g.goal_name,
+                    g.simple_explanation,
+                    g.what_data_to_find,
+                    g.source_type,
+                    m.status,
+                    m.dataset_name,
+                    m.dataset_url,
+                    m.provider,
+                    m.geography,
+                    m.data_format,
+                    m.evidence_reason,
+                    m.availability_status,
+                    m.http_status,
+                    m.repository_id,
+                    m.request_id
+                FROM research_goals g
+                LEFT JOIN goal_dataset_matches m
+                  ON m.goal_id = g.goal_id
+                 AND m.request_id = %s
+                WHERE g.topic_id = %s
+                  AND g.active = TRUE
+                ORDER BY g.goal_id, m.match_id;
+                """,
+                (
+                    request_id,
+                    topic_id,
+                ),
+            )
+
+            return [
+                dict(row)
+                for row in cursor.fetchall()
+            ]
 
 
 def load_repositories_requiring_attention(
