@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from html import escape
 
 import eurostat
@@ -15,24 +16,28 @@ from src.extract import (
 )
 from src.load import create_tables, save_dataframe
 from src.observatory_db import (
-    get_latest_concept_analysis,
+    add_data_category,
+    add_data_requirement,
+    add_research_factor,
+    confirm_research_plan,
+    get_last_discovery_at,
+    get_latest_research_question,
+    get_research_question,
     get_repository,
     initialize_default_topic,
     initialize_observatory_database,
-    load_active_research_goals,
     load_discovery_history,
-    load_expert_suggestions,
-    load_latest_goal_coverage,
+    load_latest_requirement_coverage,
     load_observatory_table,
-    load_repositories_requiring_attention,
-    load_repository_registry,
+    load_repositories_for_research,
     load_repository_runs,
+    load_research_plan,
     set_repository_status,
+    update_research_plan_items,
 )
 from src.observatory_workflow import (
-    analyse_and_store_gerontocracy,
-    run_fresh_repository_discovery,
-    validate_and_store_expert_knowledge,
+    run_confirmed_research_search,
+    start_research_question,
 )
 
 
@@ -1673,126 +1678,186 @@ app_ui = ui.page_fluid(
             ),
 
             ui.p(
-                "The Observatory explains what gerontocracy means, "
-                "decides what data are needed to study it, searches for "
-                "those data, and shows what was or was not found."
+                "Start with a research question. The application checks "
+                "that it is related to gerontocracy, proposes what should "
+                "be studied, lets you edit the plan, and then searches for "
+                "data that can answer the confirmed requirements."
             ),
 
             ui.div(
-                ui.strong("1. What is gerontocracy?"),
+                ui.strong(
+                    "1. What would you like to research today?"
+                ),
                 ui.br(),
                 (
-                    "The system gives a clear definition and turns the "
-                    "idea into specific questions that can be tested "
-                    "with data."
+                    "Enter a question related to gerontocracy or to a "
+                    "factor that can help study intergenerational power, "
+                    "resources or opportunities."
                 ),
                 class_="alert alert-primary mt-3",
             ),
 
+            ui.input_text_area(
+                "research_question",
+                "Research question",
+                placeholder=(
+                    "Example: I want to study gerontocracy in Europe."
+                ),
+                rows=3,
+                width="100%",
+            ),
+
             ui.input_action_button(
-                "analyse_gerontocracy",
-                "Understand Gerontocracy",
+                "analyse_research_question",
+                "Analyse Research Question",
                 class_="btn-primary",
             ),
 
             ui.div(
                 ui.output_text(
-                    "concept_status"
+                    "research_guardrail_status"
                 ),
                 class_="mt-2",
             ),
 
             ui.output_ui(
-                "concept_analysis_ui"
+                "current_research_summary_ui"
             ),
 
             ui.div(
-                ui.strong("2. Add something the system missed"),
+                ui.strong(
+                    "2. Review and edit the proposed research plan"
+                ),
                 ui.br(),
                 (
-                    "You can add another idea that you think is important "
-                    "for studying gerontocracy."
+                    "The hidden AI analysis proposes factors, data "
+                    "categories and specific data requirements. Edit any "
+                    "item, untick it to remove it, or add your own."
                 ),
                 class_="alert alert-light border mt-4",
-            ),
-
-            ui.input_text_area(
-                "expert_knowledge",
-                "What else should the Observatory study?",
-                placeholder=(
-                    "Example: Average age of company board members"
-                ),
-                rows=2,
-                width="100%",
-            ),
-
-            ui.div(
-                ui.strong("3. Check your addition"),
-                ui.br(),
-                (
-                    "The system checks whether your idea is really related "
-                    "to gerontocracy before adding it to the study."
-                ),
-                class_="alert alert-light border mt-4",
-            ),
-
-            ui.input_action_button(
-                "validate_expert_knowledge",
-                "Check and Add",
-                class_="btn-outline-primary",
-            ),
-
-            ui.div(
-                ui.output_text(
-                    "guardrail_status"
-                ),
-                class_="mt-2",
             ),
 
             ui.output_ui(
-                "accepted_knowledge_ui"
+                "research_plan_ui"
             ),
 
             ui.h5(
-                "What the Observatory will look for",
-                class_="mt-4",
+                "Add your own items",
+                class_="mt-3",
             ),
 
-            ui.output_ui(
-                "research_goals_ui"
+            ui.input_text(
+                "new_factor",
+                "New factor",
+                placeholder=(
+                    "Example: Age of corporate leadership"
+                ),
+                width="100%",
+            ),
+
+            ui.input_action_button(
+                "add_factor",
+                "+ Add factor",
+                class_="btn-outline-secondary btn-sm",
+            ),
+
+            ui.input_text(
+                "new_category",
+                "New data category",
+                placeholder=(
+                    "Example: Corporate governance"
+                ),
+                width="100%",
+            ),
+
+            ui.input_action_button(
+                "add_category",
+                "+ Add data category",
+                class_="btn-outline-secondary btn-sm",
+            ),
+
+            ui.input_text(
+                "new_requirement",
+                "New data requirement",
+                placeholder=(
+                    "Example: Average age of company board members"
+                ),
+                width="100%",
+            ),
+
+            ui.input_action_button(
+                "add_requirement",
+                "+ Add your own data requirement",
+                class_="btn-outline-secondary btn-sm",
             ),
 
             ui.div(
-                ui.strong("4. Find data for every research goal"),
+                ui.input_action_button(
+                    "save_plan_changes",
+                    "Save Plan Changes",
+                    class_="btn-outline-primary mt-3",
+                ),
+                ui.output_text(
+                    "plan_edit_status"
+                ),
+                class_="mt-2",
+            ),
+
+            ui.div(
+                ui.strong(
+                    "3. Confirm the final requirements and search"
+                ),
                 ui.br(),
                 (
-                    "The system searches separately for each goal. "
-                    "If it cannot find an available dataset for a goal, "
-                    "it says so instead of pretending that the goal is covered."
+                    "The search uses the final edited plan, not only the "
+                    "original AI suggestions."
                 ),
                 class_="alert alert-info mt-4",
             ),
 
             ui.input_action_button(
-                "discover_sources",
-                "Find Datasets",
+                "confirm_and_search",
+                "Confirm & Search for Data",
                 class_="btn-primary",
             ),
 
             ui.div(
                 ui.output_text(
-                    "discovery_status"
+                    "search_status"
                 ),
                 class_="mt-2",
             ),
 
             ui.h5(
-                "Data Coverage",
+                "Data Requirement Coverage",
                 class_="mt-4",
             ),
 
             ui.output_ui(
-                "goal_coverage_ui"
+                "requirement_coverage_ui"
+            ),
+
+            ui.div(
+                ui.strong(
+                    "4. Re-search and repository monitoring"
+                ),
+                ui.br(),
+                (
+                    "A repeat run checks repositories already found and "
+                    "also performs a new web search from scratch for the "
+                    "confirmed data requirements."
+                ),
+                class_="alert alert-light border mt-4",
+            ),
+
+            ui.output_ui(
+                "recurrence_status_ui"
+            ),
+
+            ui.input_action_button(
+                "search_again",
+                "Search Again",
+                class_="btn-outline-primary",
             ),
 
             ui.tags.details(
@@ -1817,11 +1882,13 @@ app_ui = ui.page_fluid(
             ),
 
             ui.div(
-                ui.strong("5. Review new or changed sources"),
+                ui.strong(
+                    "5. Review new or changed repositories"
+                ),
                 ui.br(),
                 (
-                    "Sources that are already approved and unchanged stay "
-                    "approved. Only new or changed sources need attention."
+                    "New and changed repositories require review. "
+                    "Previously approved unchanged repositories stay approved."
                 ),
                 class_="alert alert-warning mt-4",
             ),
@@ -1864,16 +1931,6 @@ app_ui = ui.page_fluid(
             ),
 
             ui.div(
-                ui.strong("6. Approve"),
-                ui.br(),
-                (
-                    "You decide which new or changed repositories "
-                    "should be trusted."
-                ),
-                class_="alert alert-success mt-4",
-            ),
-
-            ui.div(
                 ui.input_action_button(
                     "approve_selected_repository",
                     "Approve",
@@ -1896,7 +1953,7 @@ app_ui = ui.page_fluid(
 
             ui.tags.details(
                 ui.tags.summary(
-                    "Discover History"
+                    "Discovery History"
                 ),
                 ui.div(
                     ui.output_table(
@@ -2122,16 +2179,20 @@ def server(
 
     observatory_refresh = reactive.Value(0)
 
-    concept_message = reactive.Value(
-        "Click “Understand Gerontocracy” to create the study goals."
+    current_research_id = reactive.Value(
+        None
     )
 
-    guardrail_message = reactive.Value(
-        "Your accepted additions will appear below."
+    research_message = reactive.Value(
+        "Enter a gerontocracy-related research question to begin."
     )
 
-    discovery_message = reactive.Value(
-        "Ready to search for datasets for every research goal."
+    plan_message = reactive.Value(
+        "The research plan can be edited before searching."
+    )
+
+    search_message = reactive.Value(
+        "No confirmed search has been run yet."
     )
 
     review_message = reactive.Value(
@@ -2151,6 +2212,32 @@ def server(
         return int(
             topics[0]["topic_id"]
         )
+
+    try:
+        latest_research = (
+            get_latest_research_question(
+                current_topic_id()
+            )
+        )
+
+        if (
+            latest_research
+            and latest_research.get(
+                "guardrail_status"
+            ) in (
+                "IN_SCOPE",
+                "RELATED",
+            )
+        ):
+            current_research_id.set(
+                int(
+                    latest_research[
+                        "research_id"
+                    ]
+                )
+            )
+    except Exception:
+        pass
 
     def repository_badge_class(status):
         if status == "APPROVED":
@@ -2280,77 +2367,225 @@ def server(
             ),
         )
 
-    @reactive.effect
-    @reactive.event(input.analyse_gerontocracy)
-    def analyse_gerontocracy():
-        concept_message.set(
-            "Building a clear definition and research goals..."
+    def active_research():
+        research_id = (
+            current_research_id.get()
         )
 
+        if research_id is None:
+            return None
+
         try:
-            analysis = (
-                analyse_and_store_gerontocracy(
-                    current_topic_id()
+            return get_research_question(
+                research_id
+            )
+        except Exception:
+            return None
+
+    def read_dynamic_input(
+        input_id,
+        default=None,
+    ):
+        try:
+            value = input[input_id]()
+            return (
+                default
+                if value is None
+                else value
+            )
+        except Exception:
+            return default
+
+    def save_current_plan_inputs():
+        research_id = (
+            current_research_id.get()
+        )
+
+        if research_id is None:
+            raise RuntimeError(
+                "Start with a research question."
+            )
+
+        plan = load_research_plan(
+            research_id,
+            active_only=True,
+        )
+
+        factor_updates = []
+
+        for item in plan["factors"]:
+            item_id = int(
+                item["factor_id"]
+            )
+            text = str(
+                read_dynamic_input(
+                    f"factor_text_{item_id}",
+                    item["factor_name"],
+                )
+            ).strip()
+
+            keep = bool(
+                read_dynamic_input(
+                    f"factor_keep_{item_id}",
+                    True,
                 )
             )
 
-            concept_message.set(
-                "Definition and research goals created and saved."
+            factor_updates.append(
+                {
+                    "id": item_id,
+                    "text": text,
+                    "active": (
+                        keep and bool(text)
+                    ),
+                }
             )
 
-            observatory_refresh.set(
-                observatory_refresh.get() + 1
+        category_updates = []
+
+        for item in plan["categories"]:
+            item_id = int(
+                item["category_id"]
+            )
+            text = str(
+                read_dynamic_input(
+                    f"category_text_{item_id}",
+                    item["category_name"],
+                )
+            ).strip()
+
+            keep = bool(
+                read_dynamic_input(
+                    f"category_keep_{item_id}",
+                    True,
+                )
             )
 
-        except Exception as exc:
-            concept_message.set(
-                "Analysis failed: "
-                + str(exc)
+            category_updates.append(
+                {
+                    "id": item_id,
+                    "text": text,
+                    "active": (
+                        keep and bool(text)
+                    ),
+                }
             )
+
+        requirement_updates = []
+
+        for item in plan[
+            "requirements"
+        ]:
+            item_id = int(
+                item["requirement_id"]
+            )
+            text = str(
+                read_dynamic_input(
+                    f"requirement_text_{item_id}",
+                    item[
+                        "requirement_text"
+                    ],
+                )
+            ).strip()
+
+            keep = bool(
+                read_dynamic_input(
+                    f"requirement_keep_{item_id}",
+                    True,
+                )
+            )
+
+            requirement_updates.append(
+                {
+                    "id": item_id,
+                    "text": text,
+                    "active": (
+                        keep and bool(text)
+                    ),
+                }
+            )
+
+        update_research_plan_items(
+            research_id=research_id,
+            factors=factor_updates,
+            categories=category_updates,
+            requirements=requirement_updates,
+        )
+
+    def run_current_search(
+        run_type,
+    ):
+        research_id = (
+            current_research_id.get()
+        )
+
+        if research_id is None:
+            raise RuntimeError(
+                "Start with a research question."
+            )
+
+        return (
+            run_confirmed_research_search(
+                topic_id=current_topic_id(),
+                research_id=research_id,
+                run_type=run_type,
+            )
+        )
 
     @reactive.effect
-    @reactive.event(input.validate_expert_knowledge)
-    def validate_expert_knowledge():
-        suggestion = (
-            input.expert_knowledge()
+    @reactive.event(
+        input.analyse_research_question
+    )
+    def analyse_research_question_event():
+        question = (
+            input.research_question()
             or ""
         ).strip()
 
-        if not suggestion:
-            guardrail_message.set(
-                "Add one idea first."
+        if not question:
+            research_message.set(
+                "Please enter a research question."
             )
             return
 
-        guardrail_message.set(
-            "Checking whether your idea is relevant..."
+        research_message.set(
+            "Checking scope and building the editable research plan..."
         )
 
         try:
-            saved = (
-                validate_and_store_expert_knowledge(
-                    topic_id=current_topic_id(),
-                    suggestion=suggestion,
+            result = start_research_question(
+                topic_id=current_topic_id(),
+                question_text=question,
+            )
+
+            current_research_id.set(
+                int(
+                    result["research"][
+                        "research_id"
+                    ]
                 )
             )
 
-            if saved["status"] == "ACCEPTED":
-                guardrail_message.set(
-                    "Accepted: "
-                    + (
-                        saved.get(
-                            "normalized_factor"
-                        )
-                        or suggestion
-                    )
+            if not result["accepted"]:
+                research_message.set(
+                    "Out of scope: "
+                    + result["guardrail"][
+                        "reason"
+                    ]
                 )
             else:
-                guardrail_message.set(
-                    "Rejected: "
-                    + (
-                        saved.get("reason")
-                        or "Not relevant."
+                research_message.set(
+                    (
+                        "Accepted as directly related to gerontocracy. "
+                        if result[
+                            "guardrail"
+                        ]["scope"] == "IN_SCOPE"
+                        else (
+                            "Accepted as a relevant factor for "
+                            "gerontocracy research. "
+                        )
                     )
+                    + "The proposed plan is ready for editing."
                 )
 
             observatory_refresh.set(
@@ -2358,36 +2593,181 @@ def server(
             )
 
         except Exception as exc:
-            guardrail_message.set(
-                "Validation failed: "
+            research_message.set(
+                "Research analysis failed: "
                 + str(exc)
             )
 
     @reactive.effect
-    @reactive.event(input.discover_sources)
-    def run_repository_discovery():
-        discovery_message.set(
-            "Searching the web for an available dataset for every goal..."
+    @reactive.event(
+        input.save_plan_changes
+    )
+    def save_plan_changes_event():
+        try:
+            save_current_plan_inputs()
+
+            plan_message.set(
+                "Plan changes saved."
+            )
+
+            observatory_refresh.set(
+                observatory_refresh.get() + 1
+            )
+
+        except Exception as exc:
+            plan_message.set(
+                "Could not save plan changes: "
+                + str(exc)
+            )
+
+    @reactive.effect
+    @reactive.event(
+        input.add_factor
+    )
+    def add_factor_event():
+        research_id = (
+            current_research_id.get()
+        )
+
+        text = (
+            input.new_factor()
+            or ""
+        ).strip()
+
+        if research_id is None or not text:
+            plan_message.set(
+                "Enter a factor first."
+            )
+            return
+
+        try:
+            add_research_factor(
+                research_id,
+                text,
+            )
+            plan_message.set(
+                "Factor added."
+            )
+            observatory_refresh.set(
+                observatory_refresh.get() + 1
+            )
+        except Exception as exc:
+            plan_message.set(
+                "Could not add factor: "
+                + str(exc)
+            )
+
+    @reactive.effect
+    @reactive.event(
+        input.add_category
+    )
+    def add_category_event():
+        research_id = (
+            current_research_id.get()
+        )
+
+        text = (
+            input.new_category()
+            or ""
+        ).strip()
+
+        if research_id is None or not text:
+            plan_message.set(
+                "Enter a data category first."
+            )
+            return
+
+        try:
+            add_data_category(
+                research_id,
+                text,
+            )
+            plan_message.set(
+                "Data category added."
+            )
+            observatory_refresh.set(
+                observatory_refresh.get() + 1
+            )
+        except Exception as exc:
+            plan_message.set(
+                "Could not add category: "
+                + str(exc)
+            )
+
+    @reactive.effect
+    @reactive.event(
+        input.add_requirement
+    )
+    def add_requirement_event():
+        research_id = (
+            current_research_id.get()
+        )
+
+        text = (
+            input.new_requirement()
+            or ""
+        ).strip()
+
+        if research_id is None or not text:
+            plan_message.set(
+                "Enter a data requirement first."
+            )
+            return
+
+        try:
+            add_data_requirement(
+                research_id,
+                text,
+            )
+            plan_message.set(
+                "Data requirement added."
+            )
+            observatory_refresh.set(
+                observatory_refresh.get() + 1
+            )
+        except Exception as exc:
+            plan_message.set(
+                "Could not add data requirement: "
+                + str(exc)
+            )
+
+    @reactive.effect
+    @reactive.event(
+        input.confirm_and_search
+    )
+    def confirm_and_search_event():
+        search_message.set(
+            "Saving the final plan and searching for data..."
         )
 
         try:
-            result = (
-                run_fresh_repository_discovery(
-                    topic_id=current_topic_id(),
-                    run_type="MANUAL",
+            save_current_plan_inputs()
+
+            research_id = (
+                current_research_id.get()
+            )
+
+            plan_version = (
+                confirm_research_plan(
+                    research_id
                 )
             )
 
-            discovery_message.set(
-                "Search completed: "
-                f"{result['goals_found']} of "
-                f"{result['goals_total']} research goals have at least "
-                "one available dataset. "
-                f"{result['goals_not_found']} have no dataset found. "
-                f"{result['goals_unavailable']} have only unavailable "
-                "candidates. "
-                f"Repository comparison: {result['new_count']} new, "
-                f"{result['updated_count']} changed, "
+            result = run_current_search(
+                "MANUAL"
+            )
+
+            search_message.set(
+                "Search completed using research plan "
+                f"version {plan_version['version_number']}: "
+                f"{result['requirements_found']} of "
+                f"{result['requirements_total']} requirements have "
+                "an available dataset; "
+                f"{result['requirements_not_found']} were not found; "
+                f"{result['requirements_unavailable']} have only "
+                "unavailable candidates. "
+                f"Repositories: {result['new_count']} new, "
+                f"{result['updated_count']} updated, "
                 f"{result['unchanged_count']} unchanged."
             )
 
@@ -2396,8 +2776,43 @@ def server(
             )
 
         except Exception as exc:
-            discovery_message.set(
-                "Discovery failed: "
+            search_message.set(
+                "Search failed: "
+                + str(exc)
+            )
+
+    @reactive.effect
+    @reactive.event(
+        input.search_again
+    )
+    def search_again_event():
+        search_message.set(
+            "Checking existing repositories and performing a new search..."
+        )
+
+        try:
+            result = run_current_search(
+                "MANUAL_RESEARCH"
+            )
+
+            search_message.set(
+                f"Re-search completed. Existing repositories checked: "
+                f"{result['existing_checked']}; "
+                f"{result['requirements_found']} of "
+                f"{result['requirements_total']} requirements have "
+                "available data. "
+                f"Repositories: {result['new_count']} new, "
+                f"{result['updated_count']} updated, "
+                f"{result['unchanged_count']} unchanged."
+            )
+
+            observatory_refresh.set(
+                observatory_refresh.get() + 1
+            )
+
+        except Exception as exc:
+            search_message.set(
+                "Re-search failed: "
                 + str(exc)
             )
 
@@ -2405,25 +2820,27 @@ def server(
     def update_repository_selectors():
         observatory_refresh.get()
 
+        research_id = (
+            current_research_id.get()
+        )
+
+        if research_id is None:
+            return
+
         try:
-            topic_id = current_topic_id()
-
             repositories = (
-                load_repository_registry(
-                    topic_id=topic_id
+                load_repositories_for_research(
+                    research_id
                 )
             )
-
-            attention = (
-                load_repositories_requiring_attention(
-                    topic_id=topic_id
-                )
-            )
-
         except Exception:
             return
 
         browser_choices = {
+            "": "Select a repository..."
+        }
+
+        review_choices = {
             "": "Select a repository..."
         }
 
@@ -2432,36 +2849,31 @@ def server(
                 repository["repository_id"]
             )
 
-            browser_choices[
-                str(repository_id)
-            ] = (
+            label = (
                 f"SRC-{repository_id:04d} — "
                 f"{repository.get('provider', '')} — "
                 f"{repository.get('repository_name', '')}"
             )
+
+            browser_choices[
+                str(repository_id)
+            ] = label
+
+            if repository.get(
+                "needs_review"
+            ):
+                review_choices[
+                    str(repository_id)
+                ] = (
+                    f"{repository.get('change_state', 'NEW')} — "
+                    + label
+                )
 
         ui.update_select(
             "repository_browser",
             choices=browser_choices,
             session=session,
         )
-
-        review_choices = {
-            "": "Select a repository..."
-        }
-
-        for repository in attention:
-            repository_id = int(
-                repository["repository_id"]
-            )
-
-            review_choices[
-                str(repository_id)
-            ] = (
-                f"{repository.get('change_state', 'NEW')} — "
-                f"SRC-{repository_id:04d} — "
-                f"{repository.get('repository_name', '')}"
-            )
 
         ui.update_select(
             "repository_to_review",
@@ -2470,314 +2882,365 @@ def server(
         )
 
     def selected_review_repository_id():
-        value = input.repository_to_review()
+        value = (
+            input.repository_to_review()
+        )
 
         if not value:
             return None
 
-        return int(value)
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def review_repository(
+        new_status,
+    ):
+        repository_id = (
+            selected_review_repository_id()
+        )
+
+        if repository_id is None:
+            review_message.set(
+                "Select a repository first."
+            )
+            return
+
+        repository = set_repository_status(
+            repository_id,
+            new_status,
+        )
+
+        if repository:
+            review_message.set(
+                f"SRC-{repository_id:04d} is now "
+                f"{new_status}."
+            )
+        else:
+            review_message.set(
+                "Repository could not be updated."
+            )
+
+        observatory_refresh.set(
+            observatory_refresh.get() + 1
+        )
 
     @reactive.effect
-    @reactive.event(input.approve_selected_repository)
+    @reactive.event(
+        input.approve_selected_repository
+    )
     def approve_selected_repository():
-        repository_id = (
-            selected_review_repository_id()
-        )
-
-        if repository_id is None:
-            review_message.set(
-                "Select a repository first."
-            )
-            return
-
-        repository = set_repository_status(
-            repository_id,
-            "APPROVED",
-        )
-
-        review_message.set(
-            f"SRC-{repository_id:04d} approved: "
-            f"{repository['repository_name']}."
-        )
-
-        observatory_refresh.set(
-            observatory_refresh.get() + 1
+        review_repository(
+            "APPROVED"
         )
 
     @reactive.effect
-    @reactive.event(input.reject_selected_repository)
+    @reactive.event(
+        input.reject_selected_repository
+    )
     def reject_selected_repository():
-        repository_id = (
-            selected_review_repository_id()
-        )
-
-        if repository_id is None:
-            review_message.set(
-                "Select a repository first."
-            )
-            return
-
-        repository = set_repository_status(
-            repository_id,
-            "REJECTED",
-        )
-
-        review_message.set(
-            f"SRC-{repository_id:04d} rejected: "
-            f"{repository['repository_name']}."
-        )
-
-        observatory_refresh.set(
-            observatory_refresh.get() + 1
+        review_repository(
+            "REJECTED"
         )
 
     @output
     @render.text
-    def concept_status():
-        return concept_message.get()
+    def research_guardrail_status():
+        return research_message.get()
+
+    @output
+    @render.text
+    def plan_edit_status():
+        return plan_message.get()
+
+    @output
+    @render.text
+    def search_status():
+        return search_message.get()
 
     @output
     @render.ui
-    def concept_analysis_ui():
+    def current_research_summary_ui():
         observatory_refresh.get()
 
-        try:
-            analysis = (
-                get_latest_concept_analysis(
-                    current_topic_id()
-                )
-            )
-        except Exception:
-            analysis = None
+        research = active_research()
 
-        if not analysis:
+        if not research:
             return ui.div(
-                "No definition has been created yet.",
-                class_=(
-                    "alert alert-secondary mt-3"
+                "No research question has been accepted yet.",
+                class_="alert alert-secondary mt-3",
+            )
+
+        if research.get(
+            "guardrail_status"
+        ) == "OUT_OF_SCOPE":
+            return ui.div(
+                ui.strong(
+                    "This question is outside the application's scope."
                 ),
-            )
-
-        factors = analysis.get(
-            "factors_json"
-        ) or []
-
-        factor_cards = []
-
-        for factor in factors:
-            factor_cards.append(
-                ui.div(
-                    ui.strong(
-                        factor.get(
-                            "name",
-                            "",
-                        )
-                    ),
-                    ui.p(
-                        factor.get(
-                            "simple_explanation"
-                        )
-                        or factor.get(
-                            "why_it_matters"
-                        )
-                        or "",
-                        class_="mb-1 mt-1",
-                    ),
-                    ui.p(
-                        ui.strong(
-                            "Data needed: "
-                        ),
-                        factor.get(
-                            "what_data_to_find"
-                        )
-                        or "",
-                        class_="small mb-0",
-                    ),
-                    class_=(
-                        "border rounded p-2 mb-2"
-                    ),
-                )
-            )
-
-        return ui.div(
-            ui.h5(
-                "Simple definition"
-            ),
-            ui.p(
-                analysis.get(
-                    "definition"
-                )
-                or ""
-            ),
-            ui.h5(
-                "Main things to study",
-                class_="mt-3",
-            ),
-            *factor_cards,
-            class_=(
-                "card card-body mt-3"
-            ),
-        )
-
-    @output
-    @render.text
-    def guardrail_status():
-        return guardrail_message.get()
-
-    @output
-    @render.ui
-    def accepted_knowledge_ui():
-        observatory_refresh.get()
-
-        try:
-            suggestions = (
-                load_expert_suggestions(
-                    current_topic_id(),
-                    accepted_only=True,
-                )
-            )
-        except Exception:
-            suggestions = []
-
-        if not suggestions:
-            return ui.p(
-                "No additional expert factors have been accepted yet.",
-                class_="text-muted mt-2",
+                ui.p(
+                    research.get(
+                        "guardrail_reason"
+                    )
+                    or ""
+                ),
+                class_="alert alert-warning mt-3",
             )
 
         return ui.div(
             ui.strong(
-                "Validated human knowledge"
+                "Current research question"
             ),
-            ui.tags.ul(
-                *[
-                    ui.tags.li(
-                        item.get(
-                            "normalized_factor"
-                        )
-                        or item.get(
-                            "suggestion_text"
-                        )
-                        or ""
-                    )
-                    for item in suggestions
-                ]
+            ui.p(
+                research.get(
+                    "question_text"
+                )
+                or "",
+                class_="mb-2",
             ),
-            class_=(
-                "card card-body mt-3"
+            ui.strong(
+                "AI summary"
             ),
+            ui.p(
+                research.get(
+                    "plain_summary"
+                )
+                or "",
+                class_="mb-2",
+            ),
+            ui.strong(
+                "Geographic scope: "
+            ),
+            research.get(
+                "geographic_scope"
+            )
+            or "Not specified",
+            class_="card card-body mt-3",
         )
 
     @output
     @render.ui
-    def research_goals_ui():
+    def research_plan_ui():
         observatory_refresh.get()
 
-        try:
-            goals = load_active_research_goals(
-                current_topic_id()
-            )
-        except Exception:
-            goals = []
+        research_id = (
+            current_research_id.get()
+        )
 
-        if not goals:
+        if research_id is None:
             return ui.p(
-                "No research goals are available yet. "
-                "Start with “Understand Gerontocracy”.",
+                "No research plan yet.",
                 class_="text-muted",
             )
 
-        cards = []
+        research = active_research()
 
-        for goal in goals:
-            source_label = (
-                "Added by you"
-                if goal.get(
-                    "source_type"
-                ) == "HUMAN"
-                else "Created by the system"
+        if (
+            not research
+            or research.get(
+                "guardrail_status"
+            ) == "OUT_OF_SCOPE"
+        ):
+            return ui.div()
+
+        try:
+            plan = load_research_plan(
+                research_id,
+                active_only=True,
+            )
+        except Exception:
+            plan = {
+                "factors": [],
+                "categories": [],
+                "requirements": [],
+            }
+
+        factor_controls = []
+
+        for item in plan["factors"]:
+            item_id = int(
+                item["factor_id"]
             )
 
-            cards.append(
+            factor_controls.append(
                 ui.div(
-                    ui.strong(
-                        goal.get(
-                            "goal_name",
-                            "",
-                        )
-                    ),
-                    ui.span(
-                        source_label,
-                        class_=(
-                            "badge text-bg-light "
-                            "border text-dark ms-2"
+                    ui.input_text(
+                        f"factor_text_{item_id}",
+                        (
+                            f"Factor {item_id}"
                         ),
+                        value=item[
+                            "factor_name"
+                        ],
+                        width="100%",
+                    ),
+                    ui.input_checkbox(
+                        f"factor_keep_{item_id}",
+                        "Keep this factor",
+                        value=True,
                     ),
                     ui.p(
-                        goal.get(
+                        item.get(
                             "simple_explanation"
                         )
                         or "",
-                        class_="mb-1 mt-1",
+                        class_="small text-muted",
                     ),
-                    ui.p(
-                        ui.strong(
-                            "The system will look for: "
+                    class_="border rounded p-2 mb-2",
+                )
+            )
+
+        category_controls = []
+
+        for item in plan["categories"]:
+            item_id = int(
+                item["category_id"]
+            )
+
+            parent = (
+                item.get(
+                    "factor_name"
+                )
+                or "User-added category"
+            )
+
+            category_controls.append(
+                ui.div(
+                    ui.input_text(
+                        f"category_text_{item_id}",
+                        (
+                            f"Data category — {parent}"
                         ),
-                        goal.get(
-                            "what_data_to_find"
-                        )
-                        or "",
-                        class_="small mb-0",
+                        value=item[
+                            "category_name"
+                        ],
+                        width="100%",
                     ),
-                    class_=(
-                        "border rounded p-2 mb-2"
+                    ui.input_checkbox(
+                        f"category_keep_{item_id}",
+                        "Keep this category",
+                        value=True,
                     ),
+                    class_="border rounded p-2 mb-2",
+                )
+            )
+
+        requirement_controls = []
+
+        for item in plan[
+            "requirements"
+        ]:
+            item_id = int(
+                item["requirement_id"]
+            )
+
+            context = " / ".join(
+                [
+                    value
+                    for value in [
+                        item.get(
+                            "factor_name"
+                        ),
+                        item.get(
+                            "category_name"
+                        ),
+                    ]
+                    if value
+                ]
+            )
+
+            requirement_controls.append(
+                ui.div(
+                    ui.input_text(
+                        f"requirement_text_{item_id}",
+                        (
+                            "Data requirement"
+                            + (
+                                f" — {context}"
+                                if context
+                                else ""
+                            )
+                        ),
+                        value=item[
+                            "requirement_text"
+                        ],
+                        width="100%",
+                    ),
+                    ui.input_checkbox(
+                        f"requirement_keep_{item_id}",
+                        "Keep this data requirement",
+                        value=True,
+                    ),
+                    class_="border rounded p-2 mb-2",
                 )
             )
 
         return ui.div(
-            *cards
+            ui.h5(
+                "Factors"
+            ),
+            *factor_controls,
+            ui.h5(
+                "Data Categories",
+                class_="mt-3",
+            ),
+            *category_controls,
+            ui.h5(
+                "Specific Data Requirements",
+                class_="mt-3",
+            ),
+            *requirement_controls,
         )
 
     @output
     @render.ui
-    def goal_coverage_ui():
+    def requirement_coverage_ui():
         observatory_refresh.get()
 
+        research_id = (
+            current_research_id.get()
+        )
+
+        if research_id is None:
+            return ui.p(
+                "No search has been completed.",
+                class_="text-muted",
+            )
+
         try:
-            rows = load_latest_goal_coverage(
-                current_topic_id()
+            rows = (
+                load_latest_requirement_coverage(
+                    research_id
+                )
             )
         except Exception:
             rows = []
 
         if not rows:
             return ui.div(
-                "No dataset search has been completed yet.",
-                class_=(
-                    "alert alert-secondary"
-                ),
+                "No completed dataset search is available for this research.",
+                class_="alert alert-secondary",
             )
 
         grouped = {}
 
         for row in rows:
-            goal_id = int(
-                row["goal_id"]
+            requirement_id = int(
+                row["requirement_id"]
             )
 
             grouped.setdefault(
-                goal_id,
+                requirement_id,
                 {
-                    "goal": row,
+                    "requirement": row,
                     "matches": [],
                 },
             )
 
             if row.get("status"):
                 grouped[
-                    goal_id
+                    requirement_id
                 ]["matches"].append(
                     row
                 )
@@ -2785,7 +3248,9 @@ def server(
         cards = []
 
         for item in grouped.values():
-            goal = item["goal"]
+            requirement = item[
+                "requirement"
+            ]
             matches = item["matches"]
 
             found = [
@@ -2805,23 +3270,19 @@ def server(
             ]
 
             if found:
-                status_text = "DATASET FOUND"
-                status_class = (
-                    "badge text-bg-success"
+                badge = (
+                    "DATASET FOUND",
+                    "badge text-bg-success",
                 )
             elif unavailable:
-                status_text = (
-                    "FOUND, BUT NOT AVAILABLE"
-                )
-                status_class = (
-                    "badge text-bg-warning"
+                badge = (
+                    "FOUND BUT NOT AVAILABLE",
+                    "badge text-bg-warning",
                 )
             else:
-                status_text = (
-                    "NO AVAILABLE DATASET FOUND"
-                )
-                status_class = (
-                    "badge text-bg-danger"
+                badge = (
+                    "NO AVAILABLE DATASET FOUND",
+                    "badge text-bg-danger",
                 )
 
             dataset_items = []
@@ -2834,18 +3295,14 @@ def server(
                 dataset_items.append(
                     ui.tags.li(
                         ui.a(
-                            (
-                                match.get(
-                                    "dataset_name"
-                                )
-                                or "Dataset"
-                            ),
-                            href=(
-                                match.get(
-                                    "dataset_url"
-                                )
-                                or "#"
-                            ),
+                            match.get(
+                                "dataset_name"
+                            )
+                            or "Dataset",
+                            href=match.get(
+                                "dataset_url"
+                            )
+                            or "#",
                             target="_blank",
                         ),
                         (
@@ -2860,51 +3317,48 @@ def server(
                     )
                 )
 
-            if not dataset_items:
-                explanation = ""
-
-                for match in matches:
-                    if match.get(
-                        "evidence_reason"
-                    ):
-                        explanation = match[
-                            "evidence_reason"
-                        ]
-                        break
-
-                body = ui.p(
-                    explanation
-                    or (
-                        "The search did not find an "
-                        "available dataset for this goal."
-                    ),
-                    class_="mb-0 mt-2",
-                )
-            else:
-                body = ui.tags.ul(
+            body = (
+                ui.tags.ul(
                     *dataset_items,
                     class_="mb-0 mt-2",
                 )
+                if dataset_items
+                else ui.p(
+                    next(
+                        (
+                            match.get(
+                                "evidence_reason"
+                            )
+                            for match in matches
+                            if match.get(
+                                "evidence_reason"
+                            )
+                        ),
+                        (
+                            "The search did not find "
+                            "an available dataset for "
+                            "this requirement."
+                        ),
+                    ),
+                    class_="mb-0 mt-2",
+                )
+            )
 
             cards.append(
                 ui.div(
                     ui.strong(
-                        goal.get(
-                            "goal_name",
-                            "",
-                        )
+                        requirement[
+                            "requirement_text"
+                        ]
                     ),
                     ui.span(
-                        status_text,
+                        badge[0],
                         class_=(
-                            status_class
-                            + " ms-2"
+                            badge[1] + " ms-2"
                         ),
                     ),
                     body,
-                    class_=(
-                        "border rounded p-2 mb-2"
-                    ),
+                    class_="border rounded p-2 mb-2",
                 )
             )
 
@@ -2913,9 +3367,61 @@ def server(
         )
 
     @output
-    @render.text
-    def discovery_status():
-        return discovery_message.get()
+    @render.ui
+    def recurrence_status_ui():
+        observatory_refresh.get()
+
+        research_id = (
+            current_research_id.get()
+        )
+
+        if research_id is None:
+            return ui.p(
+                "No active research question.",
+                class_="text-muted",
+            )
+
+        try:
+            last_run = get_last_discovery_at(
+                research_id
+            )
+        except Exception:
+            last_run = None
+
+        if last_run is None:
+            return ui.div(
+                "No repository search has been completed yet.",
+                class_="alert alert-secondary",
+            )
+
+        if last_run.tzinfo is None:
+            last_run = last_run.replace(
+                tzinfo=timezone.utc
+            )
+
+        days = (
+            datetime.now(
+                timezone.utc
+            )
+            - last_run
+        ).days
+
+        if days >= 30:
+            return ui.div(
+                (
+                    f"It has been {days} days since the repositories "
+                    "were last checked. A new search is recommended."
+                ),
+                class_="alert alert-warning",
+            )
+
+        return ui.div(
+            (
+                f"Repositories were last checked {days} day(s) ago. "
+                "You can run a new search at any time."
+            ),
+            class_="alert alert-light border",
+        )
 
     @output
     @render.ui
@@ -2941,66 +3447,80 @@ def server(
             repository
         )
 
+    def research_attention(
+        state=None,
+    ):
+        research_id = (
+            current_research_id.get()
+        )
+
+        if research_id is None:
+            return []
+
+        try:
+            repositories = (
+                load_repositories_for_research(
+                    research_id
+                )
+            )
+        except Exception:
+            return []
+
+        result = [
+            item
+            for item in repositories
+            if item.get(
+                "needs_review"
+            )
+        ]
+
+        if state is not None:
+            result = [
+                item
+                for item in result
+                if item.get(
+                    "change_state"
+                ) == state
+            ]
+
+        return result
+
     @output
     @render.ui
     def attention_summary_ui():
         observatory_refresh.get()
 
-        try:
-            topic_id = current_topic_id()
-
-            updated = (
-                load_repositories_requiring_attention(
-                    topic_id,
-                    "UPDATED",
-                )
-            )
-
-            new = (
-                load_repositories_requiring_attention(
-                    topic_id,
-                    "NEW",
-                )
-            )
-
-        except Exception:
-            updated = []
-            new = []
+        updated = research_attention(
+            "UPDATED"
+        )
+        new = research_attention(
+            "NEW"
+        )
 
         if not updated and not new:
             return ui.div(
                 "No repositories currently require attention.",
-                class_=(
-                    "alert alert-success"
-                ),
+                class_="alert alert-success",
             )
 
         return ui.div(
             ui.span(
                 f"{len(updated)} Updated",
-                class_=(
-                    "badge text-bg-warning me-2"
-                ),
+                class_="badge text-bg-warning me-2",
             ),
             ui.span(
                 f"{len(new)} New",
-                class_=(
-                    "badge text-bg-primary"
-                ),
+                class_="badge text-bg-primary",
             ),
             class_="mb-2",
         )
 
-    def attention_list_ui(change_state):
-        try:
-            repositories = (
-                load_repositories_requiring_attention(
-                    current_topic_id(),
-                    change_state,
-                )
-            )
-        except Exception:
-            repositories = []
+    def attention_list_ui(
+        change_state,
+    ):
+        repositories = research_attention(
+            change_state
+        )
 
         if not repositories:
             return ui.p(
@@ -3067,10 +3587,26 @@ def server(
     def discovery_history_table():
         observatory_refresh.get()
 
+        research_id = (
+            current_research_id.get()
+        )
+
+        if research_id is None:
+            return pd.DataFrame(
+                [
+                    {
+                        "Status": (
+                            "No active research question"
+                        )
+                    }
+                ]
+            )
+
         try:
             runs = load_discovery_history(
                 current_topic_id(),
                 limit=25,
+                research_id=research_id,
             )
         except Exception:
             runs = []
@@ -3154,7 +3690,7 @@ def server(
             "repository_name",
             "status",
             "http_status",
-            "content_type",
+            "changed",
         ]
 
         available = [
@@ -3163,24 +3699,23 @@ def server(
             if column in df.columns
         ]
 
-        return (
-            df[available]
-            .rename(
-                columns={
-                    "run_id": "Run",
-                    "execution_date": "Date",
-                    "provider": "Provider",
-                    "repository_name": "Repository",
-                    "status": "Status",
-                    "http_status": "HTTP",
-                    "content_type": "Content Type",
-                }
-            )
+        return df[available].rename(
+            columns={
+                "run_id": "Run",
+                "execution_date": "Date",
+                "provider": "Provider",
+                "repository_name": "Repository",
+                "status": "Status",
+                "http_status": "HTTP",
+                "changed": "Changed",
+            }
         )
 
     @output
     @render.table
     def observatory_topics_table():
+        observatory_refresh.get()
+
         try:
             topics = load_observatory_table(
                 "observatory_topics"
@@ -3193,7 +3728,7 @@ def server(
                 [
                     {
                         "Status": (
-                            "No Observatory topic registered"
+                            "Observatory PostgreSQL is not available"
                         )
                     }
                 ]
@@ -3215,17 +3750,14 @@ def server(
             if column in df.columns
         ]
 
-        return (
-            df[available]
-            .rename(
-                columns={
-                    "topic_id": "Topic ID",
-                    "name": "Topic",
-                    "geography": "Geography",
-                    "status": "Status",
-                    "created_at": "Created",
-                }
-            )
+        return df[available].rename(
+            columns={
+                "topic_id": "Topic",
+                "name": "Name",
+                "geography": "Geography",
+                "status": "Status",
+                "created_at": "Created",
+            }
         )
 
     @output

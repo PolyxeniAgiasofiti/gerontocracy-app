@@ -1,264 +1,312 @@
 """
-High-level workflow for the Gerontocracy Data Observatory.
+High-level workflow orchestration for the clarified Gerontocracy research flow.
 """
+
+import json
 
 from src.observatory_db import (
     compare_and_store_repository_candidate,
     complete_discovery_request,
     create_discovery_request,
     create_repository_run,
-    ensure_human_research_goal,
-    get_latest_concept_analysis,
-    load_active_research_goals,
-    load_expert_suggestions,
-    replace_llm_research_goals,
-    save_concept_analysis,
-    save_expert_suggestion,
-    save_goal_dataset_match,
+    create_research_question,
+    get_latest_confirmed_plan,
+    get_research_question,
+    link_repository_to_research,
+    load_repositories_for_research,
+    save_generated_research_plan,
+    save_requirement_dataset_match,
+    update_repository_check_state,
 )
 from src.observatory_discovery import (
-    analyse_gerontocracy_concept,
-    build_final_search_context,
-    canonicalize_url,
-    discover_datasets_for_goals,
-    validate_human_knowledge,
+    analyse_research_question,
+    discover_datasets_for_requirements,
+    validate_research_question,
 )
 from src.observatory_refresh import (
     check_repository_source,
 )
 
 
-def analyse_and_store_gerontocracy(
+def start_research_question(
     topic_id,
+    question_text,
 ):
-    result = analyse_gerontocracy_concept()
+    """
+    Validate the user's research question.
 
-    analysis = save_concept_analysis(
+    If accepted:
+    - run the hidden AI analysis,
+    - create the editable research plan,
+    - persist the plan in PostgreSQL.
+    """
+
+    guardrail = validate_research_question(
+        question_text
+    )
+
+    research = create_research_question(
         topic_id=topic_id,
-        definition=result["definition"],
-        factors=result["factors"],
-        data_dimensions=result[
-            "data_dimensions"
-        ],
-        model=result.get("_model"),
-    )
-
-    replace_llm_research_goals(
-        topic_id=topic_id,
-        analysis_id=analysis["analysis_id"],
-        factors=result["factors"],
-    )
-
-    # Keep already accepted human knowledge active as research goals.
-    suggestions = load_expert_suggestions(
-        topic_id=topic_id,
-        accepted_only=True,
-    )
-
-    for suggestion in suggestions:
-        ensure_human_research_goal(
-            topic_id=topic_id,
-            suggestion_id=suggestion[
-                "suggestion_id"
-            ],
-            goal_name=(
-                suggestion.get(
-                    "normalized_factor"
-                )
-                or suggestion.get(
-                    "suggestion_text"
-                )
-            ),
-            what_data_to_find=(
-                suggestion.get(
-                    "what_data_to_find"
-                )
-                or suggestion.get(
-                    "normalized_factor"
-                )
-                or suggestion.get(
-                    "suggestion_text"
-                )
-            ),
-        )
-
-    return analysis
-
-
-def validate_and_store_expert_knowledge(
-    topic_id,
-    suggestion,
-):
-    analysis = get_latest_concept_analysis(
-        topic_id
-    )
-
-    if analysis is None:
-        analysis = analyse_and_store_gerontocracy(
-            topic_id
-        )
-
-    result = validate_human_knowledge(
-        suggestion=suggestion,
-        concept_definition=analysis[
-            "definition"
-        ],
-        concept_factors=analysis[
-            "factors_json"
-        ],
-    )
-
-    status = (
-        "ACCEPTED"
-        if result["accepted"]
-        else "REJECTED"
-    )
-
-    saved = save_expert_suggestion(
-        topic_id=topic_id,
-        suggestion_text=suggestion,
-        normalized_factor=result.get(
-            "normalized_factor"
+        question_text=question_text.strip(),
+        guardrail_status=guardrail["scope"],
+        guardrail_reason=guardrail["reason"],
+        guardrail_model=guardrail.get(
+            "_model"
         ),
-        status=status,
-        reason=result.get("reason"),
-        model=result.get("_model"),
     )
 
-    # Add an accepted human idea to the persistent research-goal list.
-    if status == "ACCEPTED":
-        ensure_human_research_goal(
-            topic_id=topic_id,
-            suggestion_id=saved[
-                "suggestion_id"
-            ],
-            goal_name=(
-                result.get(
-                    "normalized_factor"
-                )
-                or suggestion
-            ),
-            what_data_to_find=(
-                result.get(
-                    "what_data_to_find"
-                )
-                or result.get(
-                    "normalized_factor"
-                )
-                or suggestion
-            ),
-        )
+    if not guardrail["accepted"]:
+        return {
+            "accepted": False,
+            "research": research,
+            "guardrail": guardrail,
+            "analysis": None,
+        }
 
-    return saved
-
-
-def _ensure_goals_exist(
-    topic_id,
-    analysis,
-):
-    goals = load_active_research_goals(
-        topic_id
+    analysis = analyse_research_question(
+        question_text
     )
 
-    if goals:
-        return goals
-
-    replace_llm_research_goals(
-        topic_id=topic_id,
-        analysis_id=analysis[
-            "analysis_id"
+    save_generated_research_plan(
+        research_id=research[
+            "research_id"
+        ],
+        plain_summary=analysis[
+            "plain_summary"
+        ],
+        geographic_scope=analysis[
+            "geographic_scope"
         ],
         factors=analysis[
-            "factors_json"
+            "factors"
         ],
     )
 
-    return load_active_research_goals(
-        topic_id
+    research = get_research_question(
+        research[
+            "research_id"
+        ]
     )
 
-
-def get_final_search_context(
-    topic_id,
-):
-    analysis = get_latest_concept_analysis(
-        topic_id
-    )
-
-    if analysis is None:
-        analysis = analyse_and_store_gerontocracy(
-            topic_id
-        )
-
-    goals = _ensure_goals_exist(
-        topic_id,
-        analysis,
-    )
-
-    suggestions = load_expert_suggestions(
-        topic_id=topic_id,
-        accepted_only=True,
-    )
-
-    concept = {
-        "definition": analysis[
-            "definition"
-        ],
-        "factors": analysis[
-            "factors_json"
-        ],
-        "data_dimensions": analysis[
-            "data_dimensions_json"
-        ],
+    return {
+        "accepted": True,
+        "research": research,
+        "guardrail": guardrail,
+        "analysis": analysis,
     }
 
-    context = build_final_search_context(
-        concept_analysis=concept,
-        accepted_suggestions=suggestions,
-        research_goals=goals,
+
+def _check_existing_repositories(
+    research_id,
+):
+    """
+    Check repositories already associated with this research.
+
+    This checks accessibility and HTTP metadata.
+
+    It does not yet determine whether the statistical values inside a dataset
+    changed. That belongs to the later ingestion/snapshot phase.
+    """
+
+    checked = 0
+    unavailable = 0
+
+    repositories = (
+        load_repositories_for_research(
+            research_id
+        )
     )
 
-    return context, goals
+    for repository in repositories:
+
+        availability = (
+            check_repository_source(
+                repository["url"]
+            )
+        )
+
+        update_repository_check_state(
+            repository_id=repository[
+                "repository_id"
+            ],
+            availability=availability,
+        )
+
+        create_repository_run(
+            repository_id=repository[
+                "repository_id"
+            ],
+            status=availability[
+                "status"
+            ],
+            changed=None,
+            content_hash=availability.get(
+                "content_hash"
+            ),
+            notes=(
+                "Existing-source re-check before fresh web discovery. "
+                + str(
+                    availability.get(
+                        "notes",
+                        "",
+                    )
+                )
+            ),
+            http_status=availability.get(
+                "http_status"
+            ),
+            content_type=availability.get(
+                "content_type"
+            ),
+            last_modified=availability.get(
+                "last_modified"
+            ),
+            etag=availability.get(
+                "etag"
+            ),
+        )
+
+        checked += 1
+
+        if (
+            availability[
+                "status"
+            ]
+            != "SUCCESS"
+        ):
+            unavailable += 1
+
+    return {
+        "checked": checked,
+        "unavailable": unavailable,
+    }
 
 
-def run_fresh_repository_discovery(
+def run_confirmed_research_search(
     topic_id,
+    research_id,
     run_type="MANUAL",
 ):
     """
-    For every active research goal:
-      1. search the live web,
-      2. evaluate whether an actual usable dataset was found,
-      3. save the goal -> dataset result,
-      4. register the source repository,
-      5. compare the source with the existing repository registry.
+    Run the confirmed research plan.
+
+    The recurring workflow has two separate branches:
+
+    1. Re-check repositories already associated with the research.
+    2. Perform a new web search from scratch for every confirmed data
+       requirement.
+
+    The existing repository registry is not supplied to Gemini or Tavily as
+    the universe of possible sources.
     """
 
-    search_context, goals = (
-        get_final_search_context(
-            topic_id
+    research = get_research_question(
+        research_id
+    )
+
+    if not research:
+        raise RuntimeError(
+            "Research question not found."
         )
+
+    plan_version = (
+        get_latest_confirmed_plan(
+            research_id
+        )
+    )
+
+    if not plan_version:
+        raise RuntimeError(
+            "Confirm the research plan before searching for data."
+        )
+
+    snapshot = plan_version[
+        "snapshot_json"
+    ]
+
+    if isinstance(
+        snapshot,
+        str,
+    ):
+        snapshot = json.loads(
+            snapshot
+        )
+
+    requirements = snapshot.get(
+        "requirements",
+        [],
+    )
+
+    if not requirements:
+        raise RuntimeError(
+            "The confirmed research plan contains no data requirements."
+        )
+
+    search_context = json.dumps(
+        {
+            "question": research[
+                "question_text"
+            ],
+            "plan_version": plan_version[
+                "version_number"
+            ],
+            "factors": snapshot.get(
+                "factors",
+                [],
+            ),
+            "categories": snapshot.get(
+                "categories",
+                [],
+            ),
+            "requirements": requirements,
+        },
+        ensure_ascii=False,
     )
 
     request = create_discovery_request(
         topic_id=topic_id,
         prompt=(
-            "Fresh goal-by-goal dataset discovery "
-            "from the validated gerontocracy research goals."
+            "Fresh web discovery for the confirmed "
+            "gerontocracy research plan."
         ),
         search_context=search_context,
         model=None,
         run_type=run_type,
+        research_id=research_id,
+        plan_version_id=plan_version[
+            "plan_version_id"
+        ],
     )
 
     request_id = int(
-        request["request_id"]
+        request[
+            "request_id"
+        ]
     )
 
     try:
-        discovery = discover_datasets_for_goals(
-            search_context=search_context,
-            research_goals=goals,
+        # ---------------------------------------------------------------
+        # A. Check repositories that are already linked to this research.
+        # ---------------------------------------------------------------
+
+        existing_check = (
+            _check_existing_repositories(
+                research_id
+            )
+        )
+
+        # ---------------------------------------------------------------
+        # B. Fresh web discovery from scratch.
+        # ---------------------------------------------------------------
+
+        discovery = (
+            discover_datasets_for_requirements(
+                research_question=research[
+                    "question_text"
+                ],
+                plan_snapshot=snapshot,
+                requirements=requirements,
+            )
         )
 
         counts = {
@@ -268,49 +316,70 @@ def run_fresh_repository_discovery(
         }
 
         counted_repository_ids = set()
-        goals_found = 0
-        goals_not_found = 0
-        goals_unavailable = 0
 
-        for goal_result in discovery[
-            "goal_results"
+        requirements_found = 0
+        requirements_not_found = 0
+        requirements_unavailable = 0
+
+        for requirement_result in discovery[
+            "requirement_results"
         ]:
-            goal_id = int(
-                goal_result["goal_id"]
+
+            requirement_id = int(
+                requirement_result[
+                    "requirement_id"
+                ]
             )
 
-            datasets = goal_result.get(
-                "datasets",
-                [],
+            datasets = (
+                requirement_result.get(
+                    "datasets",
+                    [],
+                )
             )
 
-            if not goal_result.get(
-                "found"
-            ) or not datasets:
-                save_goal_dataset_match(
+            # -----------------------------------------------------------
+            # Nothing usable was found for this specific requirement.
+            # -----------------------------------------------------------
+
+            if (
+                not requirement_result.get(
+                    "found"
+                )
+                or not datasets
+            ):
+                save_requirement_dataset_match(
                     request_id=request_id,
-                    goal_id=goal_id,
+                    requirement_id=requirement_id,
                     status="NOT_FOUND",
                     evidence_reason=(
-                        goal_result.get(
+                        requirement_result.get(
                             "explanation"
                         )
                         or (
                             "No available dataset was "
-                            "found for this goal."
+                            "found for this requirement."
                         )
                     ),
                 )
-                goals_not_found += 1
+
+                requirements_not_found += 1
                 continue
 
-            goal_has_available_dataset = False
-            goal_has_unavailable_candidate = False
+            has_available = False
+            has_unavailable = False
+
+            # -----------------------------------------------------------
+            # One requirement can have more than one useful dataset.
+            # -----------------------------------------------------------
 
             for dataset in datasets:
+
                 availability = (
                     check_repository_source(
-                        dataset["url"]
+                        dataset[
+                            "url"
+                        ]
                     )
                 )
 
@@ -326,12 +395,16 @@ def run_fresh_repository_discovery(
                             "dataset_name"
                         )
                     ),
-                    "url": dataset.get("url"),
+                    "url": dataset.get(
+                        "url"
+                    ),
                     "description": dataset.get(
                         "description"
                     ),
-                    "dimension": goal_result.get(
-                        "goal_name"
+                    "dimension": (
+                        requirement_result.get(
+                            "requirement_text"
+                        )
                     ),
                     "geography": dataset.get(
                         "geography"
@@ -350,6 +423,11 @@ def run_fresh_repository_discovery(
                     ),
                 }
 
+                # -------------------------------------------------------
+                # Compare the source with the PostgreSQL repository
+                # registry and classify it as NEW / UPDATED / UNCHANGED.
+                # -------------------------------------------------------
+
                 repository, state = (
                     compare_and_store_repository_candidate(
                         topic_id=topic_id,
@@ -365,11 +443,22 @@ def run_fresh_repository_discovery(
                     ]
                 )
 
+                # Associate this repository with the research question.
+                link_repository_to_research(
+                    research_id=research_id,
+                    repository_id=repository_id,
+                )
+
+                # Count each repository only once per discovery execution,
+                # even if it satisfies several data requirements.
                 if (
                     repository_id
                     not in counted_repository_ids
                 ):
-                    counts[state] += 1
+                    counts[
+                        state
+                    ] += 1
+
                     counted_repository_ids.add(
                         repository_id
                     )
@@ -385,7 +474,7 @@ def run_fresh_repository_discovery(
                         ),
                         notes=(
                             "Availability check during "
-                            "goal-by-goal dataset discovery. "
+                            "fresh requirement search. "
                             + str(
                                 availability.get(
                                     "notes",
@@ -407,18 +496,33 @@ def run_fresh_repository_discovery(
                         ),
                     )
 
-                if availability[
-                    "status"
-                ] == "SUCCESS":
-                    match_status = "FOUND"
-                    goal_has_available_dataset = True
-                else:
-                    match_status = "UNAVAILABLE"
-                    goal_has_unavailable_candidate = True
+                if (
+                    availability[
+                        "status"
+                    ]
+                    == "SUCCESS"
+                ):
+                    match_status = (
+                        "FOUND"
+                    )
 
-                save_goal_dataset_match(
+                    has_available = True
+
+                else:
+                    match_status = (
+                        "UNAVAILABLE"
+                    )
+
+                    has_unavailable = True
+
+                # -------------------------------------------------------
+                # Persist:
+                # requirement -> dataset -> repository relationship.
+                # -------------------------------------------------------
+
+                save_requirement_dataset_match(
                     request_id=request_id,
-                    goal_id=goal_id,
+                    requirement_id=requirement_id,
                     repository_id=repository_id,
                     status=match_status,
                     dataset_name=dataset.get(
@@ -447,65 +551,117 @@ def run_fresh_repository_discovery(
                     ),
                 )
 
-            if goal_has_available_dataset:
-                goals_found += 1
-            elif goal_has_unavailable_candidate:
-                goals_unavailable += 1
-            else:
-                goals_not_found += 1
+            # -----------------------------------------------------------
+            # Requirement-level coverage classification.
+            # -----------------------------------------------------------
 
-        candidates_found = len(
-            counted_repository_ids
-        )
+            if has_available:
+                requirements_found += 1
+
+            elif has_unavailable:
+                requirements_unavailable += 1
+
+            else:
+                requirements_not_found += 1
+
+        # ---------------------------------------------------------------
+        # Mark discovery execution as successful.
+        # ---------------------------------------------------------------
 
         complete_discovery_request(
             request_id=request_id,
-            candidates_found=candidates_found,
+            candidates_found=len(
+                counted_repository_ids
+            ),
             status="SUCCESS",
             notes=(
-                f"Research goals: {len(goals)}. "
-                f"Goals with available data: {goals_found}. "
-                f"Goals without a dataset: {goals_not_found}. "
-                f"Goals with only unreachable candidates: "
-                f"{goals_unavailable}."
+                f"Existing repositories checked: "
+                f"{existing_check['checked']}; "
+                f"existing unavailable: "
+                f"{existing_check['unavailable']}; "
+                f"requirements total: "
+                f"{len(requirements)}; "
+                f"with available data: "
+                f"{requirements_found}; "
+                f"not found: "
+                f"{requirements_not_found}; "
+                f"only unavailable candidates: "
+                f"{requirements_unavailable}."
             ),
-            new_count=counts["NEW"],
+            new_count=counts[
+                "NEW"
+            ],
             updated_count=counts[
                 "UPDATED"
             ],
             unchanged_count=counts[
                 "UNCHANGED"
             ],
-            model=discovery.get("model"),
+            model=discovery.get(
+                "model"
+            ),
         )
 
         return {
             "request_id": request_id,
-            "candidates_found": candidates_found,
-            "new_count": counts["NEW"],
+
+            "existing_checked": (
+                existing_check[
+                    "checked"
+                ]
+            ),
+
+            "existing_unavailable": (
+                existing_check[
+                    "unavailable"
+                ]
+            ),
+
+            "requirements_total": len(
+                requirements
+            ),
+
+            "requirements_found": (
+                requirements_found
+            ),
+
+            "requirements_not_found": (
+                requirements_not_found
+            ),
+
+            "requirements_unavailable": (
+                requirements_unavailable
+            ),
+
+            "new_count": counts[
+                "NEW"
+            ],
+
             "updated_count": counts[
                 "UPDATED"
             ],
+
             "unchanged_count": counts[
                 "UNCHANGED"
             ],
-            "goals_total": len(goals),
-            "goals_found": goals_found,
-            "goals_not_found": goals_not_found,
-            "goals_unavailable": goals_unavailable,
+
             "model": discovery.get(
                 "model"
             ),
         }
 
     except Exception as exc:
+
         complete_discovery_request(
             request_id=request_id,
             candidates_found=0,
             status="FAILED",
-            notes=str(exc),
+            notes=str(
+                exc
+            ),
             new_count=0,
             updated_count=0,
             unchanged_count=0,
         )
+
         raise
